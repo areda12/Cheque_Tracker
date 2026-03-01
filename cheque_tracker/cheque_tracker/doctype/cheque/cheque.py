@@ -12,6 +12,9 @@ from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
     reserve_leaf,
 )
 
+# Fields that may not be edited once any submitted accounting doc exists
+_PROTECTED_FIELDS = {"amount", "party", "party_type", "company", "cheque_no", "bank_account"}
+
 
 class Cheque(Document):
     # ------------------------------------------------------------------ #
@@ -27,17 +30,36 @@ class Cheque(Document):
         if self.cheque_type == "Outgoing":
             self._handle_outgoing_leaf_reservation()
         self._validate_outgoing_cheque_no()
+        self._protect_fields_if_submitted_accounting_docs()
 
     def on_submit(self):
         if self.cheque_type == "Outgoing":
             self._mark_leaf_issued_on_submit()
+        if self.cheque_type == "Incoming":
+            # For incoming cheques, submitting = physically received.
+            # Actual AR posting happens only via Recording Payment Entry.
+            if self.status in ("Draft",):
+                frappe.db.set_value("Cheque", self.name, "status", "Received")
+                self.status = "Received"
         event_type = "Received" if self.cheque_type == "Incoming" else "Created"
         self._append_event(event_type, notes="Cheque submitted.")
         self._flush_events()
 
     def on_cancel(self):
+        # Block if any submitted accounting docs exist
+        if self._has_submitted_accounting_docs():
+            frappe.throw(
+                _(
+                    "Cannot cancel Cheque {0}: one or more linked accounting documents "
+                    "(Payment Entry / Journal Entry) are still submitted. "
+                    "Cancel those first."
+                ).format(self.name),
+                frappe.ValidationError,
+            )
         if self.status == "Cleared":
-            frappe.throw(_("Cannot cancel a Cleared cheque."), frappe.ValidationError)
+            frappe.throw(_(
+                "Cannot cancel a Cleared cheque."
+            ), frappe.ValidationError)
         if self.cheque_type == "Outgoing" and self.cheque_leaf:
             leaf_status = frappe.db.get_value(
                 "Cheque Leaf", self.cheque_leaf, "leaf_status"
@@ -51,6 +73,43 @@ class Cheque(Document):
         self._append_event("Cancelled", notes="Cheque cancelled.")
         frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
         self._flush_events()
+
+    # ------------------------------------------------------------------ #
+    #  Field protection                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _protect_fields_if_submitted_accounting_docs(self):
+        """Prevent editing core fields when submitted accounting docs are linked."""
+        if not self.is_new() and self._has_submitted_accounting_docs():
+            changed = self.get_doc_before_save()
+            if not changed:
+                return
+            for field in _PROTECTED_FIELDS:
+                old_val = changed.get(field)
+                new_val = self.get(field)
+                if old_val != new_val:
+                    frappe.throw(
+                        _(
+                            "Cannot modify field '{0}' on Cheque {1} because a submitted "
+                            "accounting document (Payment Entry or Journal Entry) already "
+                            "references it. Cancel the accounting doc first."
+                        ).format(field, self.name),
+                        frappe.ValidationError,
+                    )
+
+    def _has_submitted_accounting_docs(self):
+        """Return True if any submitted PE or JE is linked to this cheque."""
+        checks = [
+            ("Payment Entry", self.recording_payment_entry),
+            ("Journal Entry", self.clearance_journal_entry),
+            ("Journal Entry", self.reversal_journal_entry),
+        ]
+        for doctype, docname in checks:
+            if docname:
+                status = frappe.db.get_value(doctype, docname, "docstatus")
+                if status == 1:
+                    return True
+        return False
 
     # ------------------------------------------------------------------ #
     #  Leaf reservation                                                    #
@@ -236,7 +295,7 @@ def on_cancel(doc, method=None):
 
 @frappe.whitelist()
 def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
-    """Workflow / UI transition endpoint."""
+    """Workflow / UI transition endpoint (non-financial status changes)."""
     doc = frappe.get_doc("Cheque", cheque_name)
     frappe.has_permission("Cheque", "write", doc=doc, throw=True)
     _validate_transition(doc, new_status, notes)
@@ -245,6 +304,14 @@ def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
 
 
 def _validate_transition(doc, new_status: str, notes: str):
+    if new_status in ("In Safe", "Deposited", "Presented"):
+        if not doc.company or not doc.party or not doc.amount:
+            frappe.throw(
+                _("Company, Party, and Amount are required before moving to {0}.").format(
+                    new_status
+                ),
+                frappe.ValidationError,
+            )
     if new_status == "Deposited" and not doc.bank_account:
         frappe.throw(
             _("Bank Account is required before marking as Deposited."),
@@ -255,8 +322,22 @@ def _validate_transition(doc, new_status: str, notes: str):
             _("Notes / reason are required when marking a cheque as Bounced."),
             frappe.ValidationError,
         )
+    if new_status == "Cleared":
+        # Clearance must go through the JE hook
+        frappe.throw(
+            _("Cheque cannot be manually set to Cleared. "
+              "Submit the Clearance Journal Entry instead."),
+            frappe.ValidationError,
+        )
     if new_status == "Cleared" and doc.status == "Cancelled":
         frappe.throw(_("Cannot clear a cancelled cheque."), frappe.ValidationError)
+    if new_status == "Cancelled":
+        if doc._has_submitted_accounting_docs():
+            frappe.throw(
+                _("Cannot cancel Cheque {0}: submitted accounting documents exist. "
+                  "Cancel those first.").format(doc.name),
+                frappe.ValidationError,
+            )
 
 
 @frappe.whitelist()

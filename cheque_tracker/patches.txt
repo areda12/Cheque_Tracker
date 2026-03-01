@@ -1,1 +1,2 @@
 cheque_tracker.patches.v1_0.add_unique_constraint_cheque_leaf
+cheque_tracker.patches.v1_1.add_financial_posting_fields

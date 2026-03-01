@@ -101,6 +101,20 @@ doc_events = {
         "on_submit": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_submit",
         "on_cancel": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_cancel",
     },
+    # ---------------------------------------------------------------
+    # Payment Entry: sync cheque status when recording PE is submitted/cancelled
+    # ---------------------------------------------------------------
+    "Payment Entry": {
+        "on_submit": "cheque_tracker.cheque_tracker.hooks.payment_entry_hooks.payment_entry_on_submit",
+        "on_cancel": "cheque_tracker.cheque_tracker.hooks.payment_entry_hooks.payment_entry_on_cancel",
+    },
+    # ---------------------------------------------------------------
+    # Journal Entry: sync cheque status for clearance & bounce JEs
+    # ---------------------------------------------------------------
+    "Journal Entry": {
+        "on_submit": "cheque_tracker.cheque_tracker.hooks.journal_entry_hooks.journal_entry_on_submit",
+        "on_cancel": "cheque_tracker.cheque_tracker.hooks.journal_entry_hooks.journal_entry_on_cancel",
+    },
 }
 
 # ------------------------------------------------------------------

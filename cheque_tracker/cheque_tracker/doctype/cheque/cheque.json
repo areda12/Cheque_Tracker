@@ -43,6 +43,13 @@
   "bank_transaction",
   "project",
   "cost_center",
+  "section_financial_posting",
+  "pdc_account",
+  "recording_payment_entry",
+  "col_break_fin",
+  "clearance_journal_entry",
+  "reversal_journal_entry",
+  "pre_bounce_status",
   "section_events",
   "events",
   "section_attach",
@@ -241,14 +248,16 @@
   {
    "fieldname": "payment_entry",
    "fieldtype": "Link",
-   "label": "Payment Entry",
-   "options": "Payment Entry"
+   "label": "Payment Entry (Legacy)",
+   "options": "Payment Entry",
+   "read_only": 1
   },
   {
    "fieldname": "journal_entry",
    "fieldtype": "Link",
-   "label": "Journal Entry",
-   "options": "Journal Entry"
+   "label": "Journal Entry (Legacy)",
+   "options": "Journal Entry",
+   "read_only": 1
   },
   {
    "fieldname": "bank_transaction",
@@ -267,6 +276,54 @@
    "fieldtype": "Link",
    "label": "Cost Center",
    "options": "Cost Center"
+  },
+  {
+   "fieldname": "section_financial_posting",
+   "fieldtype": "Section Break",
+   "label": "Financial Posting"
+  },
+  {
+   "fieldname": "pdc_account",
+   "fieldtype": "Link",
+   "label": "PDC Receivable Account",
+   "options": "Account",
+   "description": "Override the global PDC Receivable Account from Cheque Tracker Settings for this cheque."
+  },
+  {
+   "fieldname": "recording_payment_entry",
+   "fieldtype": "Link",
+   "label": "Recording Payment Entry",
+   "options": "Payment Entry",
+   "read_only": 1,
+   "description": "Payment Entry that records receipt: Dr PDC Receivable, Cr AR."
+  },
+  {
+   "fieldname": "col_break_fin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "clearance_journal_entry",
+   "fieldtype": "Link",
+   "label": "Clearance Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "description": "Journal Entry that clears the cheque: Dr Bank, Cr PDC Receivable."
+  },
+  {
+   "fieldname": "reversal_journal_entry",
+   "fieldtype": "Link",
+   "label": "Reversal / Bounce Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "description": "Journal Entry used when cheque bounces (reverses the PDC recording)."
+  },
+  {
+   "fieldname": "pre_bounce_status",
+   "fieldtype": "Data",
+   "label": "Pre-Bounce Status",
+   "hidden": 1,
+   "read_only": 1,
+   "description": "Stores the cheque status before bounce for rollback if reversal JE is cancelled."
   },
   {
    "fieldname": "section_events",
@@ -297,7 +354,7 @@
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2024-01-01 00:00:00.000000",
+ "modified": "2024-01-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque",

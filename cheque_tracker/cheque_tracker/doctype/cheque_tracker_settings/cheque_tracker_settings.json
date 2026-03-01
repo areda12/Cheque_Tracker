@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "pdc_receivable_account",
+  "default_bank_account",
+  "default_bank_gl_account"
+ ],
+ "fields": [
+  {
+   "fieldname": "pdc_receivable_account",
+   "fieldtype": "Link",
+   "label": "PDC Receivable Account",
+   "options": "Account",
+   "description": "Asset account used as the interim 'PDC Receivable / Cheques Under Collection' account.",
+   "reqd": 0
+  },
+  {
+   "fieldname": "default_bank_account",
+   "fieldtype": "Link",
+   "label": "Default Bank Account (Bank Account)",
+   "options": "Bank Account",
+   "description": "Default bank account used for cheque clearance (optional, can be overridden per cheque)."
+  },
+  {
+   "fieldname": "default_bank_gl_account",
+   "fieldtype": "Link",
+   "label": "Default Bank GL Account",
+   "options": "Account",
+   "description": "Default bank GL account (Account) used for the clearance Journal Entry debit side."
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cheque Tracker",
+ "name": "Cheque Tracker Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Treasury User",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
