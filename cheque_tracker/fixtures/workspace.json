@@ -4,26 +4,21 @@
     "name": "Treasury Workbench",
     "title": "Treasury Workbench",
     "label": "Treasury Workbench",
+    "type": "Module",
     "category": "Modules",
+    "module": "Cheque Tracker",
     "icon": "octicon octicon-credit-card",
     "is_standard": 1,
-    "module": "Cheque Tracker",
     "public": 1,
-    "roles": [
-      {"role": "Treasury User"},
-      {"role": "Accounts User"},
-      {"role": "Cheque Auditor"}
-    ],
     "shortcuts": [
-      {"type": "DocType", "label": "Cheque",                    "link_to": "Cheque",                    "icon": "fa fa-money"},
-      {"type": "DocType", "label": "Cheque Book",               "link_to": "Cheque Book",               "icon": "fa fa-book"},
-      {"type": "DocType", "label": "Cheque Leaf",               "link_to": "Cheque Leaf",               "icon": "fa fa-leaf"},
-      {"type": "DocType", "label": "Cheque Batch",              "link_to": "Cheque Batch",              "icon": "fa fa-inbox"},
-      {"type": "Report",  "label": "Cheques Due This Week",     "link_to": "Cheques Due This Week",     "icon": "fa fa-calendar"},
-      {"type": "Report",  "label": "Deposited Not Cleared",     "link_to": "Deposited Not Cleared",     "icon": "fa fa-clock-o"},
-      {"type": "Report",  "label": "Bounced Cheques Register",  "link_to": "Bounced Cheques Register",  "icon": "fa fa-exclamation-triangle"},
-      {"type": "Report",  "label": "Cheque Book Utilization",   "link_to": "Cheque Book Utilization",   "icon": "fa fa-bar-chart"}
-    ],
-    "content": "[{\"type\":\"header\",\"data\":{\"text\":\"Cheque Management\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Leaf\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Batch\",\"col\":3}},{\"type\":\"header\",\"data\":{\"text\":\"Reports\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheques Due This Week\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Deposited Not Cleared\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bounced Cheques Register\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book Utilization\",\"col\":3}}]"
+      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque",                   "link_to": "Cheque"},
+      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Book",              "link_to": "Cheque Book"},
+      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Leaf",              "link_to": "Cheque Leaf"},
+      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Batch",             "link_to": "Cheque Batch"},
+      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Cheques Due This Week",    "link_to": "Cheques Due This Week"},
+      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Deposited Not Cleared",    "link_to": "Deposited Not Cleared"},
+      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Bounced Cheques Register", "link_to": "Bounced Cheques Register"},
+      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Cheque Book Utilization",  "link_to": "Cheque Book Utilization"}
+    ]
   }
 ]
