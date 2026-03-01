@@ -10,6 +10,7 @@
     "icon": "octicon octicon-credit-card",
     "is_standard": 1,
     "public": 1,
+    "content": "[{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Leaf\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Batch\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheques Due This Week\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Deposited Not Cleared\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bounced Cheques Register\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book Utilization\",\"col\":3}}]",
     "shortcuts": [
       {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque",                   "link_to": "Cheque"},
       {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Book",              "link_to": "Cheque Book"},
