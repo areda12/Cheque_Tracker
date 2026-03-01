@@ -7,6 +7,7 @@
     "is_active": 1,
     "override_status": 1,
     "send_email_alert": 0,
+    "workflow_state_field": "status",
     "states": [
       {"state": "Draft",     "doc_status": "0", "allow_edit": "Treasury User"},
       {"state": "Received",  "doc_status": "1", "allow_edit": "Treasury User"},
