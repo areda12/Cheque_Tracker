@@ -1,0 +1,11 @@
+[
+  {"doctype": "Workflow Action Master", "name": "Receive"},
+  {"doctype": "Workflow Action Master", "name": "Move to Safe"},
+  {"doctype": "Workflow Action Master", "name": "Deposit"},
+  {"doctype": "Workflow Action Master", "name": "Present"},
+  {"doctype": "Workflow Action Master", "name": "Clear"},
+  {"doctype": "Workflow Action Master", "name": "Bounce"},
+  {"doctype": "Workflow Action Master", "name": "Return"},
+  {"doctype": "Workflow Action Master", "name": "Replace"},
+  {"doctype": "Workflow Action Master", "name": "Cancel Cheque"}
+]

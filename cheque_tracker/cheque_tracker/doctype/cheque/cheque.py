@@ -1,0 +1,270 @@
+# Copyright (c) 2024, Ahmed Abbas and contributors
+# License: MIT
+
+import frappe
+from frappe import _
+from frappe.model.document import Document
+from frappe.utils import now_datetime, today
+
+from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
+    mark_leaf_issued,
+    release_leaf,
+    reserve_leaf,
+)
+
+
+class Cheque(Document):
+    # ------------------------------------------------------------------ #
+    #  Life-cycle hooks (wired via doc_events in hooks.py)                #
+    # ------------------------------------------------------------------ #
+
+    def after_insert(self):
+        self._append_event("Created", notes=f"Cheque {self.name} created.")
+        frappe.db.set_value("Cheque", self.name, "current_holder", frappe.session.user)
+        self._flush_events()
+
+    def before_save(self):
+        if self.cheque_type == "Outgoing":
+            self._handle_outgoing_leaf_reservation()
+        self._validate_outgoing_cheque_no()
+
+    def on_submit(self):
+        if self.cheque_type == "Outgoing":
+            self._mark_leaf_issued_on_submit()
+        event_type = "Received" if self.cheque_type == "Incoming" else "Created"
+        self._append_event(event_type, notes="Cheque submitted.")
+        self._flush_events()
+
+    def on_cancel(self):
+        if self.status == "Cleared":
+            frappe.throw(_("Cannot cancel a Cleared cheque."), frappe.ValidationError)
+        if self.cheque_type == "Outgoing" and self.cheque_leaf:
+            leaf_status = frappe.db.get_value(
+                "Cheque Leaf", self.cheque_leaf, "leaf_status"
+            )
+            if leaf_status in ("Reserved", "Issued"):
+                release_leaf(
+                    self.cheque_leaf,
+                    status="Voided",
+                    void_reason=f"Cheque {self.name} cancelled.",
+                )
+        self._append_event("Cancelled", notes="Cheque cancelled.")
+        frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
+        self._flush_events()
+
+    # ------------------------------------------------------------------ #
+    #  Leaf reservation                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _handle_outgoing_leaf_reservation(self):
+        if not self.cheque_book:
+            frappe.throw(
+                _("Cheque Book is required for Outgoing cheques."),
+                frappe.ValidationError,
+            )
+        # Already reserved for THIS cheque — nothing to do
+        if self.cheque_leaf:
+            current = frappe.db.get_value("Cheque Leaf", self.cheque_leaf, "cheque")
+            if current == self.name:
+                return
+            if current:
+                frappe.throw(
+                    _("Cheque Leaf {0} is already reserved for {1}.").format(
+                        self.cheque_leaf, current
+                    ),
+                    frappe.ValidationError,
+                )
+
+        # Atomically reserve inside an explicit transaction
+        try:
+            frappe.db.begin()
+            result = reserve_leaf(self.cheque_book, self.name, frappe.session.user)
+            frappe.db.commit()
+        except frappe.ValidationError:
+            frappe.db.rollback()
+            raise
+
+        self.cheque_leaf = result["name"]
+        self.cheque_no   = result["cheque_no"]
+
+    def _validate_outgoing_cheque_no(self):
+        """Block any manual override of cheque_no for Outgoing cheques."""
+        if self.cheque_type != "Outgoing" or not self.cheque_leaf:
+            return
+        leaf_no = frappe.db.get_value("Cheque Leaf", self.cheque_leaf, "cheque_no")
+        if leaf_no and self.cheque_no != leaf_no:
+            frappe.throw(
+                _(
+                    "Cheque No for Outgoing cheques is system-controlled "
+                    "(expected {0}, got {1})."
+                ).format(leaf_no, self.cheque_no),
+                frappe.ValidationError,
+            )
+
+    def _mark_leaf_issued_on_submit(self):
+        if not self.cheque_leaf:
+            frappe.throw(
+                _("No leaf reserved. Save the cheque first to reserve a leaf."),
+                frappe.ValidationError,
+            )
+        data = frappe.db.get_value(
+            "Cheque Leaf", self.cheque_leaf, ["leaf_status", "cheque"], as_dict=True
+        )
+        if data.leaf_status != "Reserved":
+            frappe.throw(
+                _(
+                    "Cheque Leaf {0} is not Reserved (currently: {1})."
+                ).format(self.cheque_leaf, data.leaf_status),
+                frappe.ValidationError,
+            )
+        if data.cheque != self.name:
+            frappe.throw(
+                _(
+                    "Cheque Leaf {0} is reserved for {1}, not {2}."
+                ).format(self.cheque_leaf, data.cheque, self.name),
+                frappe.ValidationError,
+            )
+        mark_leaf_issued(self.cheque_leaf)
+
+    # ------------------------------------------------------------------ #
+    #  Status management (called by workflow / API)                        #
+    # ------------------------------------------------------------------ #
+
+    def log_status_change(self, new_status: str, notes: str = ""):
+        """Transition status and append an audit event."""
+        old_status = self.status
+        updates = {"status": new_status}
+        if new_status == "Cleared":
+            updates["cleared_date"] = today()
+        frappe.db.set_value("Cheque", self.name, updates)
+        self.status = new_status
+
+        EVENT_MAP = {
+            "Received": "Received", "In Safe": "In Safe", "Deposited": "Deposited",
+            "Presented": "Presented", "Cleared": "Cleared", "Bounced": "Bounced",
+            "Returned": "Returned", "Cancelled": "Cancelled", "Replaced": "Replaced",
+        }
+        self._append_event(
+            EVENT_MAP.get(new_status, "Note"),
+            notes=notes or f"Status changed from {old_status} to {new_status}.",
+        )
+        self._flush_events()
+
+    def hand_over(self, to_user: str, location: str = "", notes: str = ""):
+        """Transfer physical custody and log a Handed Over event."""
+        old_holder = self.current_holder
+        frappe.db.set_value(
+            "Cheque", self.name,
+            {"current_holder": to_user, "custody_location": location},
+        )
+        self._append_event(
+            "Handed Over",
+            from_holder=old_holder,
+            to_holder=to_user,
+            location=location,
+            notes=notes,
+        )
+        self._flush_events()
+
+    # ------------------------------------------------------------------ #
+    #  Event helpers                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _append_event(
+        self,
+        event_type: str,
+        *,
+        from_holder=None,
+        to_holder=None,
+        location=None,
+        notes=None,
+        attachment=None,
+    ):
+        if not isinstance(getattr(self, "events", None), list):
+            self.events = []
+        self.append(
+            "events",
+            {
+                "event_type":     event_type,
+                "event_datetime": now_datetime(),
+                "from_holder":    from_holder,
+                "to_holder":      to_holder or frappe.session.user,
+                "location":       location,
+                "notes":          notes,
+                "attachment":     attachment,
+            },
+        )
+
+    def _flush_events(self):
+        """
+        Persist any in-memory events that have not yet been saved to DB.
+        Re-fetches the doc so we only INSERT genuinely new rows.
+        """
+        new_events = [e for e in (self.events or []) if not e.get("name")]
+        if not new_events:
+            return
+        persisted = frappe.get_doc("Cheque", self.name)
+        for ev in new_events:
+            persisted.append("events", ev)
+        persisted.flags.ignore_permissions = True
+        persisted.save()
+
+
+# ------------------------------------------------------------------ #
+#  doc_events entry points                                             #
+# ------------------------------------------------------------------ #
+
+def after_insert(doc, method=None):
+    doc.after_insert()
+
+
+def before_save(doc, method=None):
+    doc.before_save()
+
+
+def on_submit(doc, method=None):
+    doc.on_submit()
+
+
+def on_cancel(doc, method=None):
+    doc.on_cancel()
+
+
+# ------------------------------------------------------------------ #
+#  Whitelisted API                                                     #
+# ------------------------------------------------------------------ #
+
+@frappe.whitelist()
+def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
+    """Workflow / UI transition endpoint."""
+    doc = frappe.get_doc("Cheque", cheque_name)
+    frappe.has_permission("Cheque", "write", doc=doc, throw=True)
+    _validate_transition(doc, new_status, notes)
+    doc.log_status_change(new_status, notes=notes)
+    return {"status": "ok", "new_status": new_status}
+
+
+def _validate_transition(doc, new_status: str, notes: str):
+    if new_status == "Deposited" and not doc.bank_account:
+        frappe.throw(
+            _("Bank Account is required before marking as Deposited."),
+            frappe.ValidationError,
+        )
+    if new_status == "Bounced" and not notes:
+        frappe.throw(
+            _("Notes / reason are required when marking a cheque as Bounced."),
+            frappe.ValidationError,
+        )
+    if new_status == "Cleared" and doc.status == "Cancelled":
+        frappe.throw(_("Cannot clear a cancelled cheque."), frappe.ValidationError)
+
+
+@frappe.whitelist()
+def hand_over_cheque(
+    cheque_name: str, to_user: str, location: str = "", notes: str = ""
+):
+    """Transfer physical custody."""
+    doc = frappe.get_doc("Cheque", cheque_name)
+    frappe.has_permission("Cheque", "write", doc=doc, throw=True)
+    doc.hand_over(to_user=to_user, location=location, notes=notes)
+    return {"status": "ok"}

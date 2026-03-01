@@ -1,0 +1,12 @@
+[
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Draft",     "style": ""},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Received",  "style": "Primary"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "In Safe",   "style": "Info"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Deposited", "style": "Warning"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Presented", "style": "Warning"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Cleared",   "style": "Success"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Bounced",   "style": "Danger"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Returned",  "style": "Danger"},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Cancelled", "style": ""},
+  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Replaced",  "style": "Info"}
+]

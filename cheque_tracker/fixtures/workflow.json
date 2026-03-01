@@ -1,0 +1,40 @@
+[
+  {
+    "doctype": "Workflow",
+    "name": "Cheque Workflow",
+    "document_type": "Cheque",
+    "workflow_name": "Cheque Workflow",
+    "is_active": 1,
+    "override_status": 1,
+    "send_email_alert": 0,
+    "states": [
+      {"state": "Draft",     "doc_status": "0", "allow_edit": "Treasury User"},
+      {"state": "Received",  "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "In Safe",   "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "Deposited", "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "Presented", "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "Cleared",   "doc_status": "1", "allow_edit": "Accounts User"},
+      {"state": "Bounced",   "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "Returned",  "doc_status": "1", "allow_edit": "Treasury User"},
+      {"state": "Cancelled", "doc_status": "2", "allow_edit": "Treasury User"},
+      {"state": "Replaced",  "doc_status": "1", "allow_edit": "Treasury User"}
+    ],
+    "transitions": [
+      {"state": "Draft",     "action": "Receive",       "next_state": "Received",  "allowed": "Treasury User", "allow_self_approval": 1, "condition": "doc.cheque_type == 'Incoming'"},
+      {"state": "Draft",     "action": "Submit",        "next_state": "Received",  "allowed": "Treasury User", "allow_self_approval": 1, "condition": "doc.cheque_type == 'Outgoing'"},
+      {"state": "Received",  "action": "Move to Safe",  "next_state": "In Safe",   "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Received",  "action": "Deposit",       "next_state": "Deposited", "allowed": "Treasury User", "allow_self_approval": 1, "condition": "doc.bank_account"},
+      {"state": "In Safe",   "action": "Deposit",       "next_state": "Deposited", "allowed": "Treasury User", "allow_self_approval": 1, "condition": "doc.bank_account"},
+      {"state": "Deposited", "action": "Present",       "next_state": "Presented", "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Deposited", "action": "Clear",         "next_state": "Cleared",   "allowed": "Accounts User", "allow_self_approval": 1},
+      {"state": "Presented", "action": "Clear",         "next_state": "Cleared",   "allowed": "Accounts User", "allow_self_approval": 1},
+      {"state": "Deposited", "action": "Bounce",        "next_state": "Bounced",   "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Presented", "action": "Bounce",        "next_state": "Bounced",   "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Received",  "action": "Return",        "next_state": "Returned",  "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "In Safe",   "action": "Return",        "next_state": "Returned",  "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Bounced",   "action": "Replace",       "next_state": "Replaced",  "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "Received",  "action": "Cancel Cheque", "next_state": "Cancelled", "allowed": "Treasury User", "allow_self_approval": 1},
+      {"state": "In Safe",   "action": "Cancel Cheque", "next_state": "Cancelled", "allowed": "Treasury User", "allow_self_approval": 1}
+    ]
+  }
+]

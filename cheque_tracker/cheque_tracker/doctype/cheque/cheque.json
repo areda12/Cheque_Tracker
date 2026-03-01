@@ -1,0 +1,344 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "autoname": "naming_series:",
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "cheque_type",
+  "status",
+  "col_break_hdr",
+  "company",
+  "party_type",
+  "party",
+  "section_amounts",
+  "amount",
+  "currency",
+  "section_dates",
+  "issue_date",
+  "received_date",
+  "due_date",
+  "col_break_dates",
+  "cleared_date",
+  "section_cheque",
+  "cheque_no",
+  "drawee_bank",
+  "drawer_name",
+  "col_break_cheque",
+  "bank_account",
+  "cheque_book",
+  "cheque_leaf",
+  "section_custody",
+  "current_holder",
+  "custody_location",
+  "section_accounting",
+  "reference_doctype",
+  "reference_name",
+  "col_break_acct",
+  "payment_entry",
+  "journal_entry",
+  "bank_transaction",
+  "project",
+  "cost_center",
+  "section_events",
+  "events",
+  "section_attach",
+  "scan",
+  "remarks"
+ ],
+ "fields": [
+  {
+   "default": "CHQ-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "CHQ-.YYYY.-.#####",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "cheque_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Cheque Type",
+   "options": "Incoming\nOutgoing",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nReceived\nIn Safe\nDeposited\nPresented\nCleared\nBounced\nReturned\nCancelled\nReplaced",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_hdr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "party_type",
+   "fieldtype": "Select",
+   "label": "Party Type",
+   "options": "Customer\nSupplier\nEmployee\nOther",
+   "reqd": 1
+  },
+  {
+   "fieldname": "party",
+   "fieldtype": "Dynamic Link",
+   "label": "Party",
+   "options": "party_type",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_amounts",
+   "fieldtype": "Section Break",
+   "label": "Amount"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount",
+   "reqd": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_dates",
+   "fieldtype": "Section Break",
+   "label": "Dates"
+  },
+  {
+   "fieldname": "issue_date",
+   "fieldtype": "Date",
+   "label": "Issue Date"
+  },
+  {
+   "depends_on": "eval:doc.cheque_type=='Incoming'",
+   "fieldname": "received_date",
+   "fieldtype": "Date",
+   "label": "Received Date"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_break_dates",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cleared_date",
+   "fieldtype": "Date",
+   "label": "Cleared Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_cheque",
+   "fieldtype": "Section Break",
+   "label": "Cheque Details"
+  },
+  {
+   "fieldname": "cheque_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Cheque No",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.cheque_type=='Incoming'",
+   "fieldname": "drawee_bank",
+   "fieldtype": "Link",
+   "label": "Drawee Bank",
+   "options": "Bank"
+  },
+  {
+   "depends_on": "eval:doc.cheque_type=='Incoming'",
+   "fieldname": "drawer_name",
+   "fieldtype": "Data",
+   "label": "Drawer Name"
+  },
+  {
+   "fieldname": "col_break_cheque",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "label": "Bank Account",
+   "options": "Bank Account"
+  },
+  {
+   "depends_on": "eval:doc.cheque_type=='Outgoing'",
+   "fieldname": "cheque_book",
+   "fieldtype": "Link",
+   "label": "Cheque Book",
+   "options": "Cheque Book"
+  },
+  {
+   "fieldname": "cheque_leaf",
+   "fieldtype": "Link",
+   "label": "Cheque Leaf",
+   "options": "Cheque Leaf",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_custody",
+   "fieldtype": "Section Break",
+   "label": "Custody"
+  },
+  {
+   "fieldname": "current_holder",
+   "fieldtype": "Link",
+   "label": "Current Holder",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custody_location",
+   "fieldtype": "Data",
+   "label": "Custody Location"
+  },
+  {
+   "fieldname": "section_accounting",
+   "fieldtype": "Section Break",
+   "label": "Accounting Links"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype"
+  },
+  {
+   "fieldname": "col_break_acct",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "payment_entry",
+   "fieldtype": "Link",
+   "label": "Payment Entry",
+   "options": "Payment Entry"
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry"
+  },
+  {
+   "fieldname": "bank_transaction",
+   "fieldtype": "Link",
+   "label": "Bank Transaction",
+   "options": "Bank Transaction"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "section_events",
+   "fieldtype": "Section Break",
+   "label": "Event Timeline"
+  },
+  {
+   "fieldname": "events",
+   "fieldtype": "Table",
+   "label": "Events",
+   "options": "Cheque Event"
+  },
+  {
+   "fieldname": "section_attach",
+   "fieldtype": "Section Break",
+   "label": "Attachments & Notes"
+  },
+  {
+   "fieldname": "scan",
+   "fieldtype": "Attach",
+   "label": "Scan / Attachment"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
+ ],
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cheque Tracker",
+ "name": "Cheque",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Treasury User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Cheque Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1
+}

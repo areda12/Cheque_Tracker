@@ -1,0 +1,2 @@
+include pyproject.toml
+recursive-include cheque_tracker *.json *.js *.css *.html *.md *.txt

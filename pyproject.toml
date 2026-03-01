@@ -1,0 +1,19 @@
+[project]
+name = "cheque_tracker"
+authors = [
+    { name = "Ahmed Abbas", email = "ahmed@example.com" }
+]
+description = "Cheque Tracking System for ERPNext"
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = ["frappe"]
+
+[project.urls]
+Homepage = "https://github.com/ahmed/cheque_tracker"
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.dev-dependencies]

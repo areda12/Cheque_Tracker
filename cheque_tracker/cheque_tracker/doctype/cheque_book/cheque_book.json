@@ -1,0 +1,271 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "autoname": "naming_series:",
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "bank_account",
+  "bank",
+  "account",
+  "currency",
+  "section_dates",
+  "issue_date",
+  "custodian",
+  "safe_location",
+  "branch",
+  "section_sequence",
+  "sequence_type",
+  "start_cheque_no",
+  "end_cheque_no",
+  "col_break_seq",
+  "digits_count",
+  "prefix",
+  "suffix",
+  "pattern_example",
+  "leaves_count",
+  "section_status",
+  "status",
+  "unused_leaves",
+  "issued_leaves",
+  "col_break_counters",
+  "voided_leaves",
+  "cancelled_leaves",
+  "remarks"
+ ],
+ "fields": [
+  {
+   "default": "CHQBK-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "CHQBK-.YYYY.-.#####",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Bank Account",
+   "options": "Bank Account",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "bank_account.bank",
+   "fieldname": "bank",
+   "fieldtype": "Link",
+   "label": "Bank",
+   "options": "Bank",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "bank_account.account",
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_dates",
+   "fieldtype": "Section Break",
+   "label": "Dates & Custody"
+  },
+  {
+   "fieldname": "issue_date",
+   "fieldtype": "Date",
+   "label": "Issue Date"
+  },
+  {
+   "fieldname": "custodian",
+   "fieldtype": "Link",
+   "label": "Custodian",
+   "options": "User"
+  },
+  {
+   "fieldname": "safe_location",
+   "fieldtype": "Data",
+   "label": "Safe Location"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "fieldname": "section_sequence",
+   "fieldtype": "Section Break",
+   "label": "Cheque Sequence"
+  },
+  {
+   "default": "Numeric",
+   "fieldname": "sequence_type",
+   "fieldtype": "Select",
+   "label": "Sequence Type",
+   "options": "Numeric\nAlphanumeric Pattern",
+   "reqd": 1
+  },
+  {
+   "fieldname": "start_cheque_no",
+   "fieldtype": "Data",
+   "label": "Start Cheque No",
+   "reqd": 1
+  },
+  {
+   "fieldname": "end_cheque_no",
+   "fieldtype": "Data",
+   "label": "End Cheque No",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_break_seq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "digits_count",
+   "fieldtype": "Int",
+   "label": "Digits Count (zero-pad)"
+  },
+  {
+   "fieldname": "prefix",
+   "fieldtype": "Data",
+   "label": "Prefix"
+  },
+  {
+   "fieldname": "suffix",
+   "fieldtype": "Data",
+   "label": "Suffix"
+  },
+  {
+   "depends_on": "eval:doc.sequence_type=='Alphanumeric Pattern'",
+   "fieldname": "pattern_example",
+   "fieldtype": "Data",
+   "label": "Pattern Example",
+   "read_only": 1
+  },
+  {
+   "fieldname": "leaves_count",
+   "fieldtype": "Int",
+   "label": "Total Leaves",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_status",
+   "fieldtype": "Section Break",
+   "label": "Status & Counters"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nActive\nExhausted\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unused_leaves",
+   "fieldtype": "Int",
+   "label": "Unused Leaves",
+   "read_only": 1
+  },
+  {
+   "fieldname": "issued_leaves",
+   "fieldtype": "Int",
+   "label": "Issued Leaves",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_counters",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "voided_leaves",
+   "fieldtype": "Int",
+   "label": "Voided Leaves",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_leaves",
+   "fieldtype": "Int",
+   "label": "Cancelled Leaves",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
+ ],
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cheque Tracker",
+ "name": "Cheque Book",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Treasury User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "cancel": 1,
+   "read": 1,
+   "role": "System Manager",
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Cheque Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1
+}

@@ -1,0 +1,23 @@
+/* ─── Cheque Tracker – custom styles ─────────────────────────── */
+
+/* Status colour pills shown in list / form views */
+.indicator-pill.draft    { --indicator-color: var(--gray-400); }
+.indicator-pill.received { --indicator-color: var(--blue-500); }
+.indicator-pill.in-safe  { --indicator-color: var(--purple-500); }
+.indicator-pill.deposited{ --indicator-color: var(--yellow-500); }
+.indicator-pill.presented{ --indicator-color: var(--orange-500); }
+.indicator-pill.cleared  { --indicator-color: var(--green-500); }
+.indicator-pill.bounced,
+.indicator-pill.returned { --indicator-color: var(--red-500); }
+.indicator-pill.cancelled{ --indicator-color: var(--gray-500); }
+.indicator-pill.replaced { --indicator-color: var(--cyan-500); }
+
+/* Event timeline inside the Cheque form */
+.cheque-event-timeline {
+    border-left: 3px solid var(--border-color);
+    margin-left: 16px;
+    padding-left: 16px;
+}
+.cheque-event-timeline .event-row {
+    margin-bottom: 8px;
+}

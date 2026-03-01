@@ -1,0 +1,12 @@
+[
+  {
+    "doctype": "Property Setter",
+    "name": "Cheque-cheque_no-read_only_depends_on",
+    "doc_type": "Cheque",
+    "field_name": "cheque_no",
+    "property": "read_only_depends_on",
+    "value": "eval:doc.cheque_type=='Outgoing'",
+    "property_type": "Code",
+    "is_system_generated": 0
+  }
+]

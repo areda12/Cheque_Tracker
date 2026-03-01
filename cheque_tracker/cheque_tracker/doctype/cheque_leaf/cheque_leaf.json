@@ -1,0 +1,142 @@
+{
+ "actions": [],
+ "allow_import": 0,
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "cheque_book",
+  "company",
+  "bank_account",
+  "cheque_no",
+  "leaf_status",
+  "section_reservation",
+  "reserved_by",
+  "reserved_on",
+  "col_break_res",
+  "issued_on",
+  "cheque",
+  "void_reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "cheque_book",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Cheque Book",
+   "options": "Cheque Book",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "label": "Bank Account",
+   "options": "Bank Account",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "cheque_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Cheque No",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "Unused",
+   "fieldname": "leaf_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Leaf Status",
+   "options": "Unused\nReserved\nIssued\nVoided\nCancelled",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_reservation",
+   "fieldtype": "Section Break",
+   "label": "Reservation & Issue"
+  },
+  {
+   "fieldname": "reserved_by",
+   "fieldtype": "Link",
+   "label": "Reserved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reserved_on",
+   "fieldtype": "Datetime",
+   "label": "Reserved On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_res",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "issued_on",
+   "fieldtype": "Date",
+   "label": "Issued On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cheque",
+   "fieldtype": "Link",
+   "label": "Cheque",
+   "options": "Cheque",
+   "read_only": 1
+  },
+  {
+   "fieldname": "void_reason",
+   "fieldtype": "Small Text",
+   "label": "Void / Cancel Reason"
+  }
+ ],
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cheque Tracker",
+ "name": "Cheque Leaf",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Treasury User",
+   "share": 1
+  },
+  {
+   "read": 1,
+   "role": "Accounts User"
+  },
+  {
+   "read": 1,
+   "role": "Cheque Auditor"
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "cheque_no",
+ "sort_order": "ASC",
+ "track_changes": 1
+}
