@@ -7,7 +7,7 @@ description = "Cheque Tracking System for ERPNext"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
-dependencies = ["frappe"]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/ahmed/cheque_tracker"
