@@ -1,12 +1,12 @@
 [
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Draft",     "style": ""},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Received",  "style": "Primary"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "In Safe",   "style": "Info"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Deposited", "style": "Warning"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Presented", "style": "Warning"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Cleared",   "style": "Success"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Bounced",   "style": "Danger"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Returned",  "style": "Danger"},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Cancelled", "style": ""},
-  {"doctype": "Workflow State", "workflow_name": "Cheque Workflow", "name": "Replaced",  "style": "Info"}
+  {"doctype": "Workflow State", "name": "Draft",     "workflow_state_name": "Draft",     "style": ""},
+  {"doctype": "Workflow State", "name": "Received",  "workflow_state_name": "Received",  "style": "Primary"},
+  {"doctype": "Workflow State", "name": "In Safe",   "workflow_state_name": "In Safe",   "style": "Info"},
+  {"doctype": "Workflow State", "name": "Deposited", "workflow_state_name": "Deposited", "style": "Warning"},
+  {"doctype": "Workflow State", "name": "Presented", "workflow_state_name": "Presented", "style": "Warning"},
+  {"doctype": "Workflow State", "name": "Cleared",   "workflow_state_name": "Cleared",   "style": "Success"},
+  {"doctype": "Workflow State", "name": "Bounced",   "workflow_state_name": "Bounced",   "style": "Danger"},
+  {"doctype": "Workflow State", "name": "Returned",  "workflow_state_name": "Returned",  "style": "Danger"},
+  {"doctype": "Workflow State", "name": "Cancelled", "workflow_state_name": "Cancelled", "style": ""},
+  {"doctype": "Workflow State", "name": "Replaced",  "workflow_state_name": "Replaced",  "style": "Info"}
 ]
