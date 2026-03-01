@@ -81,7 +81,8 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "Draft\nReceived\nIn Safe\nDeposited\nPresented\nCleared\nBounced\nReturned\nCancelled\nReplaced",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "col_break_hdr",
@@ -156,7 +157,8 @@
    "fieldname": "cleared_date",
    "fieldtype": "Date",
    "label": "Cleared Date",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "section_cheque",
@@ -217,12 +219,14 @@
    "fieldtype": "Link",
    "label": "Current Holder",
    "options": "User",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "custody_location",
    "fieldtype": "Data",
-   "label": "Custody Location"
+   "label": "Custody Location",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "section_accounting",
@@ -295,7 +299,8 @@
    "label": "Recording Payment Entry",
    "options": "Payment Entry",
    "read_only": 1,
-   "description": "Payment Entry that records receipt: Dr PDC Receivable, Cr AR."
+   "description": "Payment Entry that records receipt: Dr PDC Receivable, Cr AR.",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "col_break_fin",
@@ -307,7 +312,8 @@
    "label": "Clearance Journal Entry",
    "options": "Journal Entry",
    "read_only": 1,
-   "description": "Journal Entry that clears the cheque: Dr Bank, Cr PDC Receivable."
+   "description": "Journal Entry that clears the cheque: Dr Bank, Cr PDC Receivable.",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "reversal_journal_entry",
@@ -315,7 +321,8 @@
    "label": "Reversal / Bounce Journal Entry",
    "options": "Journal Entry",
    "read_only": 1,
-   "description": "Journal Entry used when cheque bounces (reverses the PDC recording)."
+   "description": "Journal Entry used when cheque bounces (reverses the PDC recording).",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "pre_bounce_status",
@@ -323,7 +330,8 @@
    "label": "Pre-Bounce Status",
    "hidden": 1,
    "read_only": 1,
-   "description": "Stores the cheque status before bounce for rollback if reversal JE is cancelled."
+   "description": "Stores the cheque status before bounce for rollback if reversal JE is cancelled.",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "section_events",
@@ -334,7 +342,8 @@
    "fieldname": "events",
    "fieldtype": "Table",
    "label": "Events",
-   "options": "Cheque Event"
+   "options": "Cheque Event",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "section_attach",
@@ -354,7 +363,7 @@
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2024-01-02 00:00:00.000000",
+ "modified": "2024-01-03 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque",
