@@ -266,27 +266,10 @@ class Cheque(Document):
         for ev in new_events:
             persisted.append("events", ev)
         persisted.flags.ignore_permissions = True
+        # Required for submitted docs: Frappe blocks child-table changes
+        # after submission unless this flag is set.
+        persisted.flags.ignore_validate_update_after_submit = True
         persisted.save()
-
-
-# ------------------------------------------------------------------ #
-#  doc_events entry points                                             #
-# ------------------------------------------------------------------ #
-
-def after_insert(doc, method=None):
-    doc.after_insert()
-
-
-def before_save(doc, method=None):
-    doc.before_save()
-
-
-def on_submit(doc, method=None):
-    doc.on_submit()
-
-
-def on_cancel(doc, method=None):
-    doc.on_cancel()
 
 
 # ------------------------------------------------------------------ #

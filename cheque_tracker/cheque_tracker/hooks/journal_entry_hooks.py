@@ -37,6 +37,7 @@ def _append_event_and_save(cheque_name, event_type, ref_doctype, ref_name, notes
         "notes":             notes,
     })
     doc.flags.ignore_permissions = True
+    doc.flags.ignore_validate_update_after_submit = True
     doc.save()
 
 

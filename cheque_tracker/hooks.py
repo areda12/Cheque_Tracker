@@ -13,15 +13,12 @@ app_include_js  = "/assets/cheque_tracker/js/cheque_tracker.js"
 
 # ------------------------------------------------------------------
 # Fixtures
-# `bench export-fixtures` writes them; `bench migrate` re-imports them.
 # ------------------------------------------------------------------
 fixtures = [
-    # New roles shipped with this app
     {
         "dt": "Role",
         "filters": [["name", "in", ["Treasury User", "Cheque Auditor"]]],
     },
-    # Workflow for Cheque
     {
         "dt": "Workflow",
         "filters": [["document_type", "=", "Cheque"]],
@@ -50,12 +47,10 @@ fixtures = [
             ]
         ],
     },
-    # Workspace
     {
         "dt": "Workspace",
         "filters": [["name", "=", "Treasury Workbench"]],
     },
-    # Script Reports
     {
         "dt": "Report",
         "filters": [
@@ -71,7 +66,6 @@ fixtures = [
             ]
         ],
     },
-    # Property setters (read-only rules for cheque_no on Outgoing)
     {
         "dt": "Property Setter",
         "filters": [["doc_type", "=", "Cheque"]],
@@ -90,13 +84,12 @@ scheduler_events = {
 # ------------------------------------------------------------------
 # Document Events
 # ------------------------------------------------------------------
+# IMPORTANT: Cheque lifecycle hooks (after_insert, before_save, on_submit,
+# on_cancel) are defined as *methods* on the Cheque Document subclass.
+# Frappe calls Document class methods automatically — registering them
+# again here via doc_events would fire them TWICE, producing duplicate
+# Cheque Events. They are intentionally absent from this dict.
 doc_events = {
-    "Cheque": {
-        "after_insert": "cheque_tracker.cheque_tracker.doctype.cheque.cheque.after_insert",
-        "before_save": "cheque_tracker.cheque_tracker.doctype.cheque.cheque.before_save",
-        "on_submit": "cheque_tracker.cheque_tracker.doctype.cheque.cheque.on_submit",
-        "on_cancel": "cheque_tracker.cheque_tracker.doctype.cheque.cheque.on_cancel",
-    },
     "Cheque Book": {
         "on_submit": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_submit",
         "on_cancel": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_cancel",
