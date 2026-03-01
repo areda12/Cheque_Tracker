@@ -2,6 +2,7 @@
   {
     "doctype": "Property Setter",
     "name": "Cheque-cheque_no-read_only_depends_on",
+    "doctype_or_field": "DocField",
     "doc_type": "Cheque",
     "field_name": "cheque_no",
     "property": "read_only_depends_on",
