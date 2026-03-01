@@ -2,6 +2,7 @@
   {
     "doctype": "Workspace",
     "name": "Treasury Workbench",
+    "title": "Treasury Workbench",
     "label": "Treasury Workbench",
     "category": "Modules",
     "icon": "octicon octicon-credit-card",
