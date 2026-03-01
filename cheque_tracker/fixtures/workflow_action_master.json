@@ -1,11 +1,11 @@
 [
-  {"doctype": "Workflow Action Master", "name": "Receive"},
-  {"doctype": "Workflow Action Master", "name": "Move to Safe"},
-  {"doctype": "Workflow Action Master", "name": "Deposit"},
-  {"doctype": "Workflow Action Master", "name": "Present"},
-  {"doctype": "Workflow Action Master", "name": "Clear"},
-  {"doctype": "Workflow Action Master", "name": "Bounce"},
-  {"doctype": "Workflow Action Master", "name": "Return"},
-  {"doctype": "Workflow Action Master", "name": "Replace"},
-  {"doctype": "Workflow Action Master", "name": "Cancel Cheque"}
+  {"doctype": "Workflow Action Master", "name": "Receive",       "workflow_action_name": "Receive"},
+  {"doctype": "Workflow Action Master", "name": "Move to Safe",  "workflow_action_name": "Move to Safe"},
+  {"doctype": "Workflow Action Master", "name": "Deposit",       "workflow_action_name": "Deposit"},
+  {"doctype": "Workflow Action Master", "name": "Present",       "workflow_action_name": "Present"},
+  {"doctype": "Workflow Action Master", "name": "Clear",         "workflow_action_name": "Clear"},
+  {"doctype": "Workflow Action Master", "name": "Bounce",        "workflow_action_name": "Bounce"},
+  {"doctype": "Workflow Action Master", "name": "Return",        "workflow_action_name": "Return"},
+  {"doctype": "Workflow Action Master", "name": "Replace",       "workflow_action_name": "Replace"},
+  {"doctype": "Workflow Action Master", "name": "Cancel Cheque", "workflow_action_name": "Cancel Cheque"}
 ]
