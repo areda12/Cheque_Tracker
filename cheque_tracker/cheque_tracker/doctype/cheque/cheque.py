@@ -13,7 +13,10 @@ from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
 )
 
 # Fields that may not be edited once any submitted accounting doc exists
-_PROTECTED_FIELDS = {"amount", "party", "party_type", "company", "cheque_no", "bank_account"}
+# bank_account is intentionally excluded: it may be set/changed on submitted cheques
+# (the bank is often unknown at receipt time). Changes are audit-logged via
+# on_update_after_submit instead.
+_PROTECTED_FIELDS = {"amount", "party", "party_type", "company", "cheque_no"}
 
 
 class Cheque(Document):
@@ -73,6 +76,36 @@ class Cheque(Document):
         self._append_event("Cancelled", notes="Cheque cancelled.")
         frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
         self._flush_events()
+
+    def on_update_after_submit(self):
+        """
+        Fires whenever a submitted Cheque is saved (workflow transitions,
+        field edits allowed via allow_on_submit).
+
+        Governance rule: any change to bank_account on a live cheque must be
+        logged as an immutable Cheque Event so there is a full audit trail of
+        when and by whom the bank destination was assigned.
+        """
+        before = self.get_doc_before_save()
+        if not before:
+            return
+
+        old_ba = before.get("bank_account")
+        new_ba = self.bank_account
+
+        if old_ba != new_ba:
+            if new_ba:
+                notes = (
+                    f"Bank Account assigned: {new_ba}"
+                    + (f" (previously: {old_ba})" if old_ba else "")
+                    + f" — by {frappe.session.user}."
+                )
+            else:
+                notes = (
+                    f"Bank Account cleared (was: {old_ba}) — by {frappe.session.user}."
+                )
+            self._append_event("Note", notes=notes)
+            self._flush_events()
 
     # ------------------------------------------------------------------ #
     #  Field protection                                                    #
