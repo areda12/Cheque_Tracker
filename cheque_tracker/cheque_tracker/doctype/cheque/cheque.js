@@ -9,21 +9,275 @@
  *   • Create Clearance Entry          (PDC asset → Bank)
  *   • Process Bounce                  (reverse PDC recording)
  *   • Mark In Safe / Mark Deposited / Mark Presented  (non-financial custody events)
+ *
+ * Filters & UX:
+ *   • Bank Account → company bank accounts only
+ *   • Cheque Book / Cheque Leaf → hidden for Incoming cheques
+ *   • Reference DocType → filtered by party_type context
+ *   • Reference Name → filtered by party + reference_doctype
+ *   • Cheque Book → filtered by company & bank_account
+ *   • Cheque Leaf → filtered by selected cheque_book
  */
+
+// ─── Reference DocType mappings per Party Type ───────────────────────────
+const REFERENCE_DOCTYPE_MAP = {
+    Customer: ["Sales Invoice", "Sales Order", "Delivery Note", "Payment Entry", "Journal Entry"],
+    Supplier: ["Purchase Invoice", "Purchase Order", "Purchase Receipt", "Payment Entry", "Journal Entry"],
+    Employee: ["Expense Claim", "Payment Entry", "Journal Entry"],
+    Other:    ["Payment Entry", "Journal Entry"],
+};
 
 frappe.ui.form.on("Cheque", {
     // ------------------------------------------------------------------
-    // refresh: wire up buttons whenever the form reloads
+    // setup: one-time filters that don't depend on field values
+    // ------------------------------------------------------------------
+    setup(frm) {
+        // 1) Bank Account → only company bank accounts
+        frm.set_query("bank_account", () => ({
+            filters: {
+                is_company_account: 1,
+                ...(frm.doc.company ? { company: frm.doc.company } : {}),
+            },
+        }));
+
+        // Cheque Book → filtered by company (and bank_account if set)
+        frm.set_query("cheque_book", () => {
+            const filters = { status: ["in", ["Draft", "Active"]] };
+            if (frm.doc.company) filters.company = frm.doc.company;
+            if (frm.doc.bank_account) filters.bank_account = frm.doc.bank_account;
+            return { filters };
+        });
+
+        // Cheque Leaf → filtered by selected cheque_book, only unused
+        frm.set_query("cheque_leaf", () => {
+            const filters = { leaf_status: "Available" };
+            if (frm.doc.cheque_book) filters.cheque_book = frm.doc.cheque_book;
+            return { filters };
+        });
+
+        // 3) Reference DocType → filtered by party_type context
+        frm.set_query("reference_doctype", () => {
+            const allowed = _get_allowed_reference_doctypes(frm);
+            return {
+                filters: {
+                    name: ["in", allowed],
+                },
+            };
+        });
+
+        // 4) Reference Name → filtered by party + reference_doctype
+        frm.set_query("reference_name", () => {
+            const ref_dt = frm.doc.reference_doctype;
+            if (!ref_dt) return {};
+
+            const filters = {};
+
+            // Map party_type to the correct field name on the reference doctype
+            const mapping = _get_party_field(ref_dt, frm.doc.party_type);
+            if (mapping && frm.doc.party) {
+                filters[mapping] = frm.doc.party;
+            }
+
+            // Only show submitted documents for invoice/order types
+            const submittable_doctypes = [
+                "Sales Invoice", "Sales Order", "Delivery Note",
+                "Purchase Invoice", "Purchase Order", "Purchase Receipt",
+                "Expense Claim", "Payment Entry", "Journal Entry",
+            ];
+            if (submittable_doctypes.includes(ref_dt)) {
+                filters.docstatus = 1;
+            }
+
+            if (frm.doc.company) {
+                filters.company = frm.doc.company;
+            }
+
+            return { filters };
+        });
+
+        // Cost Center → filtered by company
+        frm.set_query("cost_center", () => {
+            const filters = { is_group: 0 };
+            if (frm.doc.company) filters.company = frm.doc.company;
+            return { filters };
+        });
+
+        // PDC Account → filtered by company
+        frm.set_query("pdc_account", () => {
+            const filters = { is_group: 0 };
+            if (frm.doc.company) filters.company = frm.doc.company;
+            return { filters };
+        });
+    },
+
+    // ------------------------------------------------------------------
+    // refresh: buttons + visibility toggles
     // ------------------------------------------------------------------
     refresh(frm) {
         _setup_buttons(frm);
+        _toggle_cheque_book_fields(frm);
     },
 
     // Re-evaluate buttons when status changes in the form (workflow transitions)
     status(frm) {
         _setup_buttons(frm);
     },
+
+    // ------------------------------------------------------------------
+    // Field change handlers
+    // ------------------------------------------------------------------
+
+    // 2) Hide cheque_book & cheque_leaf for Incoming cheques
+    cheque_type(frm) {
+        _toggle_cheque_book_fields(frm);
+        // Clear cheque book fields if switching to Incoming
+        if (frm.doc.cheque_type === "Incoming") {
+            frm.set_value("cheque_book", "");
+            frm.set_value("cheque_leaf", "");
+        }
+    },
+
+    // When company changes, validate dependent fields & auto-set currency
+    company(frm) {
+        if (frm.doc.bank_account) {
+            // Validate existing bank_account still belongs to new company
+            frappe.db.get_value("Bank Account", frm.doc.bank_account, "company", (r) => {
+                if (r && r.company !== frm.doc.company) {
+                    frm.set_value("bank_account", "");
+                }
+            });
+        }
+        frm.set_value("cost_center", "");
+        frm.set_value("pdc_account", "");
+        // Auto-fetch default currency from company
+        if (frm.doc.company && !frm.doc.currency) {
+            frappe.db.get_value("Company", frm.doc.company, "default_currency", (r) => {
+                if (r && r.default_currency) {
+                    frm.set_value("currency", r.default_currency);
+                }
+            });
+        }
+    },
+
+    // When bank_account changes, clear cheque_book if it no longer matches
+    bank_account(frm) {
+        if (frm.doc.cheque_book) {
+            frappe.db.get_value("Cheque Book", frm.doc.cheque_book, "bank_account", (r) => {
+                if (r && r.bank_account !== frm.doc.bank_account) {
+                    frm.set_value("cheque_book", "");
+                    frm.set_value("cheque_leaf", "");
+                }
+            });
+        }
+    },
+
+    // When cheque_book changes, clear cheque_leaf
+    cheque_book(frm) {
+        if (!frm.doc.cheque_book) {
+            frm.set_value("cheque_leaf", "");
+        }
+    },
+
+    // When party_type changes, clear dependent fields
+    party_type(frm) {
+        frm.set_value("party", "");
+        frm.set_value("reference_doctype", "");
+        frm.set_value("reference_name", "");
+    },
+
+    // When party changes, clear reference_name and auto-set drawer_name
+    party(frm) {
+        frm.set_value("reference_name", "");
+        // Auto-populate drawer_name for incoming cheques
+        if (frm.doc.cheque_type === "Incoming" && frm.doc.party && frm.doc.party_type) {
+            const name_field = _get_name_field(frm.doc.party_type);
+            if (name_field) {
+                const dt = frm.doc.party_type === "Other" ? "Supplier" : frm.doc.party_type;
+                frappe.db.get_value(dt, frm.doc.party, name_field, (r) => {
+                    if (r && r[name_field] && !frm.doc.drawer_name) {
+                        frm.set_value("drawer_name", r[name_field]);
+                    }
+                });
+            }
+        }
+    },
+
+    // When reference_doctype changes, clear reference_name
+    reference_doctype(frm) {
+        frm.set_value("reference_name", "");
+    },
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELPER: Toggle cheque book/leaf visibility based on cheque_type
+// ═══════════════════════════════════════════════════════════════════════
+
+function _toggle_cheque_book_fields(frm) {
+    const isIncoming = frm.doc.cheque_type === "Incoming";
+    frm.toggle_display("cheque_book", !isIncoming);
+    frm.toggle_display("cheque_leaf", !isIncoming);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELPER: Get allowed reference doctypes based on party_type
+// ═══════════════════════════════════════════════════════════════════════
+
+function _get_allowed_reference_doctypes(frm) {
+    const party_type = frm.doc.party_type;
+    if (party_type && REFERENCE_DOCTYPE_MAP[party_type]) {
+        return REFERENCE_DOCTYPE_MAP[party_type];
+    }
+    // Fallback: show all possible reference doctypes
+    const all = new Set();
+    Object.values(REFERENCE_DOCTYPE_MAP).forEach((arr) => arr.forEach((dt) => all.add(dt)));
+    return Array.from(all);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELPER: Map party_type to the correct field on reference doctypes
+// ═══════════════════════════════════════════════════════════════════════
+
+function _get_party_field(doctype, party_type) {
+    const field_map = {
+        "Sales Invoice":      { Customer: "customer" },
+        "Sales Order":        { Customer: "customer" },
+        "Delivery Note":      { Customer: "customer" },
+        "Purchase Invoice":   { Supplier: "supplier" },
+        "Purchase Order":     { Supplier: "supplier" },
+        "Purchase Receipt":   { Supplier: "supplier" },
+        "Expense Claim":      { Employee: "employee" },
+        "Payment Entry":      { Customer: "party", Supplier: "party", Employee: "party" },
+        "Journal Entry":      {},  // JE uses multi-row accounts, no single party field
+    };
+
+    const dt_map = field_map[doctype];
+    if (dt_map && dt_map[party_type]) {
+        return dt_map[party_type];
+    }
+    return null;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELPER: Get the "name" field for each party type (for drawer_name)
+// ═══════════════════════════════════════════════════════════════════════
+
+function _get_name_field(party_type) {
+    const map = {
+        Customer: "customer_name",
+        Supplier: "supplier_name",
+        Employee: "employee_name",
+    };
+    return map[party_type] || null;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ACTION BUTTONS
+// ═══════════════════════════════════════════════════════════════════════
 
 function _setup_buttons(frm) {
     // Only show action buttons for submitted (docstatus=1) Incoming cheques
