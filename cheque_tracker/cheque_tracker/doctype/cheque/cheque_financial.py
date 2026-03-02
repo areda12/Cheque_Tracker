@@ -86,6 +86,35 @@ def _get_bank_gl_account(cheque_doc):
     )
 
 
+def _get_cash_gl_account(cheque_doc):
+    """
+    Resolve the cash GL account for teller-cash clearance:
+      1. cash_account field on Cheque (overrides settings)
+      2. Cheque Tracker Settings → default_cash_account
+    """
+    if cheque_doc.cash_account:
+        return cheque_doc.cash_account
+    settings = frappe.get_cached_doc("Cheque Tracker Settings")
+    if getattr(settings, "default_cash_account", None):
+        return settings.default_cash_account
+    frappe.throw(
+        _("Cash GL Account could not be resolved. "
+          "Set the Cash Account on the Cheque or configure Cheque Tracker Settings."),
+        frappe.ValidationError,
+    )
+
+
+def _get_debit_account_for_clearance(cheque_doc):
+    """
+    Return the appropriate debit GL account based on clearance_type:
+      - Deposit → Bank GL Account
+      - Cash    → Cash GL Account
+    """
+    if cheque_doc.clearance_type == "Cash":
+        return _get_cash_gl_account(cheque_doc)
+    return _get_bank_gl_account(cheque_doc)
+
+
 def _append_cheque_event(cheque_name, event_type, ref_doctype=None, ref_name=None, notes=None):
     """Append an event row to the Cheque and save."""
     cheque = frappe.get_doc("Cheque", cheque_name)
@@ -243,14 +272,15 @@ def make_clearance_journal_entry(cheque_name: str) -> str:
         frappe.throw(_("Cheque Amount must be greater than zero."))
 
     pdc_account  = _get_pdc_account(cheque)
-    bank_account = _get_bank_gl_account(cheque)
+    debit_account = _get_debit_account_for_clearance(cheque)
+    is_cash = cheque.clearance_type == "Cash"
 
     # --- idempotency ---
     existing = cheque.clearance_journal_entry
     if existing:
         status = frappe.db.get_value("Journal Entry", existing, "docstatus")
         if status == 0:
-            _update_clearance_je(existing, cheque, pdc_account, bank_account)
+            _update_clearance_je(existing, cheque, pdc_account, debit_account)
             return existing
         elif status == 1:
             frappe.msgprint(
@@ -266,8 +296,10 @@ def make_clearance_journal_entry(cheque_name: str) -> str:
     je.posting_date  = today()
     je.cheque_no     = cheque.cheque_no
     je.cheque_date   = cheque.due_date
+
+    clearance_label = "Cash Clearance (Teller)" if is_cash else "Cheque Clearance"
     je.user_remark   = (
-        f"Cheque Clearance: {cheque_name} | "
+        f"{clearance_label}: {cheque_name} | "
         f"Cheque No: {cheque.cheque_no} | Party: {cheque.party}"
     )
 
@@ -277,7 +309,7 @@ def make_clearance_journal_entry(cheque_name: str) -> str:
     amt = flt(cheque.amount)
 
     je.append("accounts", {
-        "account":                    bank_account,
+        "account":                    debit_account,
         "debit_in_account_currency":  amt,
         "credit_in_account_currency": 0,
         "cost_center":                cheque.cost_center,
@@ -294,19 +326,22 @@ def make_clearance_journal_entry(cheque_name: str) -> str:
 
     _set_cheque_fields(cheque_name, {"clearance_journal_entry": je.name})
 
+    target_label = "Cash" if is_cash else "Bank"
     frappe.msgprint(
-        _("Clearance Journal Entry {0} created in Draft. Submit it to mark cheque as Cleared.").format(je.name),
+        _("Clearance Journal Entry {0} created in Draft (Dr {1} / Cr PDC). Submit it to mark cheque as Cleared.").format(
+            je.name, target_label
+        ),
         alert=True,
     )
     return je.name
 
 
-def _update_clearance_je(je_name, cheque_doc, pdc_account, bank_account):
+def _update_clearance_je(je_name, cheque_doc, pdc_account, debit_account):
     """Update an existing Draft Clearance JE."""
     je = frappe.get_doc("Journal Entry", je_name)
     amt = flt(cheque_doc.amount)
     for row in je.accounts:
-        if row.account == bank_account:
+        if row.account == debit_account:
             row.debit_in_account_currency  = amt
             row.credit_in_account_currency = 0
         elif row.account == pdc_account:

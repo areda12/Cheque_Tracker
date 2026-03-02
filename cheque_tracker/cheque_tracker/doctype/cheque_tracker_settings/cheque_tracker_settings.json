@@ -31,11 +31,18 @@
    "label": "Default Bank GL Account",
    "options": "Account",
    "description": "Default bank GL account (Account) used for the clearance Journal Entry debit side."
+  },
+  {
+   "fieldname": "default_cash_account",
+   "fieldtype": "Link",
+   "label": "Default Cash Account",
+   "options": "Account",
+   "description": "Default GL Cash account used when cashing cheques at teller. Can be overridden per cheque."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2024-01-01 00:00:00.000000",
+ "modified": "2025-03-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque Tracker Settings",

@@ -57,6 +57,9 @@ def _handle_clearance_je_submit(je_doc):
         return
 
     cheque_name = row["name"]
+    clearance_type = frappe.db.get_value("Cheque", cheque_name, "clearance_type") or "Deposit"
+    target = "Cash" if clearance_type == "Cash" else "Bank"
+
     frappe.db.set_value("Cheque", cheque_name, {
         "status":       "Cleared",
         "cleared_date": today(),
@@ -68,7 +71,7 @@ def _handle_clearance_je_submit(je_doc):
         ref_name=je_doc.name,
         notes=(
             f"Clearance Journal Entry {je_doc.name} submitted. "
-            "Funds moved from PDC Receivable to Bank."
+            f"Funds moved from PDC Receivable to {target}."
         ),
     )
 

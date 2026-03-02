@@ -32,6 +32,11 @@ class Cheque(Document):
     def before_save(self):
         if self.cheque_type == "Outgoing":
             self._handle_outgoing_leaf_reservation()
+        if self.cheque_type == "Incoming" and not self.drawee_bank:
+            frappe.throw(
+                _("Drawee Bank is required for Incoming cheques."),
+                frappe.ValidationError,
+            )
         self._validate_outgoing_cheque_no()
         self._protect_fields_if_submitted_accounting_docs()
 
@@ -82,17 +87,17 @@ class Cheque(Document):
         Fires whenever a submitted Cheque is saved (workflow transitions,
         field edits allowed via allow_on_submit).
 
-        Governance rule: any change to bank_account on a live cheque must be
-        logged as an immutable Cheque Event so there is a full audit trail of
-        when and by whom the bank destination was assigned.
+        Governance rule: any change to bank_account or cash_account on a
+        live cheque must be logged as an immutable Cheque Event so there
+        is a full audit trail of when and by whom the account was assigned.
         """
         before = self.get_doc_before_save()
         if not before:
             return
 
+        # Audit-log bank_account changes
         old_ba = before.get("bank_account")
         new_ba = self.bank_account
-
         if old_ba != new_ba:
             if new_ba:
                 notes = (
@@ -105,7 +110,33 @@ class Cheque(Document):
                     f"Bank Account cleared (was: {old_ba}) — by {frappe.session.user}."
                 )
             self._append_event("Note", notes=notes)
-            self._flush_events()
+
+        # Audit-log cash_account changes
+        old_ca = before.get("cash_account")
+        new_ca = self.cash_account
+        if old_ca != new_ca:
+            if new_ca:
+                notes = (
+                    f"Cash Account assigned: {new_ca}"
+                    + (f" (previously: {old_ca})" if old_ca else "")
+                    + f" — by {frappe.session.user}."
+                )
+            else:
+                notes = (
+                    f"Cash Account cleared (was: {old_ca}) — by {frappe.session.user}."
+                )
+            self._append_event("Note", notes=notes)
+
+        # Audit-log clearance_type changes
+        old_ct = before.get("clearance_type")
+        new_ct = self.clearance_type
+        if old_ct != new_ct:
+            self._append_event(
+                "Note",
+                notes=f"Clearance Type changed from {old_ct or 'unset'} to {new_ct} — by {frappe.session.user}.",
+            )
+
+        self._flush_events()
 
     # ------------------------------------------------------------------ #
     #  Field protection                                                    #
@@ -328,6 +359,15 @@ def _validate_transition(doc, new_status: str, notes: str):
                 ),
                 frappe.ValidationError,
             )
+    # Cash flow: block Deposited/Presented since these are deposit-only statuses
+    if doc.clearance_type == "Cash" and new_status in ("Deposited", "Presented"):
+        frappe.throw(
+            _("Cannot mark as {0} when Clearance Type is Cash. "
+              "Cash cheques go directly from In Safe → Cleared via the clearance entry.").format(
+                new_status
+            ),
+            frappe.ValidationError,
+        )
     if new_status == "Deposited" and not doc.bank_account:
         frappe.throw(
             _("Bank Account is required before marking as Deposited."),

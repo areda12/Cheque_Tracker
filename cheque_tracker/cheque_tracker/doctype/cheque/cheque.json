@@ -177,7 +177,8 @@
    "fieldname": "drawee_bank",
    "fieldtype": "Link",
    "label": "Drawee Bank",
-   "options": "Bank"
+   "options": "Bank",
+   "mandatory_depends_on": "eval:doc.cheque_type=='Incoming'"
   },
   {
    "depends_on": "eval:doc.cheque_type=='Incoming'",
@@ -190,11 +191,33 @@
    "fieldtype": "Column Break"
   },
   {
+   "fieldname": "clearance_type",
+   "fieldtype": "Select",
+   "label": "Clearance Type",
+   "options": "\nDeposit\nCash",
+   "default": "Deposit",
+   "in_list_view": 0,
+   "in_standard_filter": 1,
+   "description": "Deposit: cheque goes through bank deposit flow. Cash: cheque cashed at teller window.",
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.cheque_type=='Incoming'"
+  },
+  {
    "fieldname": "bank_account",
    "fieldtype": "Link",
    "label": "Bank Account",
    "options": "Bank Account",
    "allow_on_submit": 1
+  },
+  {
+   "fieldname": "cash_account",
+   "fieldtype": "Link",
+   "label": "Cash Account",
+   "options": "Account",
+   "depends_on": "eval:doc.clearance_type=='Cash'",
+   "mandatory_depends_on": "eval:doc.clearance_type=='Cash'",
+   "allow_on_submit": 1,
+   "description": "GL Cash/Petty Cash account to debit when cashing at teller."
   },
   {
    "depends_on": "eval:doc.cheque_type=='Outgoing'",
@@ -364,7 +387,7 @@
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2024-01-04 00:00:00.000000",
+ "modified": "2025-03-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque",

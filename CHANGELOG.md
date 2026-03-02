@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## v1.1.4 — Filters, UX & Cash Clearance (2025-03-02)
+
+### Client-side filters & UX improvements (`cheque.js`)
+- **Bank Account** filter now shows only company bank accounts (`is_company_account = 1`)
+- **Cheque Book & Cheque Leaf** fields are hidden when cheque type is Incoming
+- **Reference DocType** filtered by party type (Customer → Sales Invoice/SO/DN; Supplier → Purchase Invoice/PO/PR; Employee → Expense Claim; all → PE/JE)
+- **Reference Name** filtered by party, reference doctype, company, and docstatus
+- **Cheque Book** filtered by company, bank account, and active status
+- **Cheque Leaf** filtered by cheque book and available status
+- **Cost Center & PDC Account** filtered by company
+- Cascading field clears on parent field changes (company → bank_account → cheque_book → cheque_leaf; party_type → party → reference_name)
+- Auto-populate company default currency and drawer name from party
+
+### Cash clearance flow (teller cashing)
+- New **`clearance_type`** field (Select: Deposit / Cash) on Cheque doctype
+- New **`cash_account`** field (Link → Account, filtered to Cash type) visible only when clearance_type = Cash
+- New **`default_cash_account`** field in Cheque Tracker Settings (global fallback)
+- Cash flow skips Deposited/Presented statuses — goes directly from Received/In Safe → Cleared
+- Clearance JE debits Cash account instead of Bank account when clearance_type = Cash
+- Separate "Create Cash Clearance Entry" button label and confirmation message
+- Status transition validation blocks Deposited/Presented for Cash clearance type
+
+### Validation & audit
+- **Drawee Bank** now mandatory for Incoming cheques
+- Audit logging extended to track `cash_account` and `clearance_type` changes on submitted cheques
+- JE hook event notes now reflect "Cash" vs "Bank" target in clearance events
+
+### Files changed
+- `cheque.json` — 2 new fields (clearance_type, cash_account), drawee_bank mandatory for incoming
+- `cheque.js` — full rewrite of client-side controller with filters and clearance_type logic
+- `cheque.py` — drawee_bank validation, cash flow transition rules, extended audit logging
+- `cheque_financial.py` — new `_get_cash_gl_account` / `_get_debit_account_for_clearance` helpers
+- `journal_entry_hooks.py` — clearance event notes reflect cash vs bank
+- `cheque_tracker_settings.json` — new `default_cash_account` field
+
+---
+
 ## v1.1.0 — Financial Posting Logic (2024)
 
 ### Summary

@@ -19,6 +19,10 @@
  *   • Cheque Leaf → filtered by selected cheque_book
  */
 
+// ─── Clearance type constants ────────────────────────────────────────────
+const CLEARANCE_DEPOSIT = "Deposit";
+const CLEARANCE_CASH    = "Cash";
+
 // ─── Reference DocType mappings per Party Type ───────────────────────────
 const REFERENCE_DOCTYPE_MAP = {
     Customer: ["Sales Invoice", "Sales Order", "Delivery Note", "Payment Entry", "Journal Entry"],
@@ -108,6 +112,13 @@ frappe.ui.form.on("Cheque", {
             if (frm.doc.company) filters.company = frm.doc.company;
             return { filters };
         });
+
+        // Cash Account → filtered by company, account_type = Cash
+        frm.set_query("cash_account", () => {
+            const filters = { is_group: 0, account_type: "Cash" };
+            if (frm.doc.company) filters.company = frm.doc.company;
+            return { filters };
+        });
     },
 
     // ------------------------------------------------------------------
@@ -116,6 +127,7 @@ frappe.ui.form.on("Cheque", {
     refresh(frm) {
         _setup_buttons(frm);
         _toggle_cheque_book_fields(frm);
+        _toggle_clearance_type_fields(frm);
     },
 
     // Re-evaluate buttons when status changes in the form (workflow transitions)
@@ -134,6 +146,17 @@ frappe.ui.form.on("Cheque", {
         if (frm.doc.cheque_type === "Incoming") {
             frm.set_value("cheque_book", "");
             frm.set_value("cheque_leaf", "");
+        }
+    },
+
+    // Toggle bank_account vs cash_account visibility based on clearance type
+    clearance_type(frm) {
+        _toggle_clearance_type_fields(frm);
+        // Clear the irrelevant account when switching
+        if (frm.doc.clearance_type === CLEARANCE_CASH) {
+            frm.set_value("bank_account", "");
+        } else {
+            frm.set_value("cash_account", "");
         }
     },
 
@@ -221,6 +244,28 @@ function _toggle_cheque_book_fields(frm) {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+//  HELPER: Toggle bank_account vs cash_account based on clearance_type
+// ═══════════════════════════════════════════════════════════════════════
+
+function _toggle_clearance_type_fields(frm) {
+    const isCash = frm.doc.clearance_type === CLEARANCE_CASH;
+    const isIncoming = frm.doc.cheque_type === "Incoming";
+
+    // For incoming cheques: show bank_account only for Deposit, cash_account only for Cash
+    // For outgoing cheques: always show bank_account, never show clearance_type/cash_account
+    if (isIncoming) {
+        frm.toggle_display("bank_account", !isCash);
+        frm.toggle_display("cash_account", isCash);
+        frm.toggle_reqd("bank_account", !isCash);
+    } else {
+        frm.toggle_display("bank_account", true);
+        frm.toggle_display("cash_account", false);
+        frm.toggle_display("clearance_type", false);
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
 //  HELPER: Get allowed reference doctypes based on party_type
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -290,6 +335,8 @@ function _setup_buttons(frm) {
 
     if (!isSubmitted) return;
 
+    const isCash = frm.doc.clearance_type === CLEARANCE_CASH;
+
     // ------------------------------------------------------------------
     // Non-financial custody transitions
     // ------------------------------------------------------------------
@@ -300,15 +347,20 @@ function _setup_buttons(frm) {
             }, __("Manage"));
         }
     }
-    if (status === "In Safe") {
-        frm.add_custom_button(__("Mark Deposited"), () => {
-            _change_status(frm, "Deposited");
-        }, __("Manage"));
-    }
-    if (status === "Deposited") {
-        frm.add_custom_button(__("Mark Presented"), () => {
-            _change_status(frm, "Presented");
-        }, __("Manage"));
+
+    // Deposit flow: In Safe → Deposited → Presented
+    // Cash flow: skip Deposited/Presented entirely (go straight to clearance from In Safe)
+    if (!isCash) {
+        if (status === "In Safe") {
+            frm.add_custom_button(__("Mark Deposited"), () => {
+                _change_status(frm, "Deposited");
+            }, __("Manage"));
+        }
+        if (status === "Deposited") {
+            frm.add_custom_button(__("Mark Presented"), () => {
+                _change_status(frm, "Presented");
+            }, __("Manage"));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -329,11 +381,19 @@ function _setup_buttons(frm) {
 
     // ------------------------------------------------------------------
     // B) Clearance Entry
+    //    Deposit: available from Received/In Safe/Deposited/Presented
+    //    Cash:    available from Received/In Safe (skips deposit steps)
     // ------------------------------------------------------------------
-    if (isIncoming && ["Received", "In Safe", "Deposited", "Presented"].includes(status)) {
+    const clearance_statuses = isCash
+        ? ["Received", "In Safe"]
+        : ["Received", "In Safe", "Deposited", "Presented"];
+    if (isIncoming && clearance_statuses.includes(status)) {
         const clr_je = frm.doc.clearance_journal_entry;
         if (!clr_je) {
-            frm.add_custom_button(__("Create Clearance Entry"), () => {
+            const btn_label = isCash
+                ? __("Create Cash Clearance Entry")
+                : __("Create Clearance Entry");
+            frm.add_custom_button(btn_label, () => {
                 _make_clearance_je(frm);
             }, __("Accounting"));
         } else {
@@ -346,7 +406,7 @@ function _setup_buttons(frm) {
     // ------------------------------------------------------------------
     // C) Bounce
     // ------------------------------------------------------------------
-    if (isIncoming && ["Received", "In Safe", "Deposited", "Presented"].includes(status)) {
+    if (isIncoming && clearance_statuses.includes(status)) {
         frm.add_custom_button(__("Process Bounce"), () => {
             _process_bounce(frm);
         }, __("Accounting"));
@@ -390,7 +450,17 @@ function _make_recording_pe(frm) {
 // Action: Create Clearance Journal Entry
 // ---------------------------------------------------------------------------
 function _make_clearance_je(frm) {
-    if (!frm.doc.bank_account) {
+    const isCash = frm.doc.clearance_type === CLEARANCE_CASH;
+
+    if (isCash && !frm.doc.cash_account) {
+        frappe.msgprint({
+            title: __("Cash Account Required"),
+            message: __("Please set the Cash Account on this Cheque before creating the Cash Clearance Entry."),
+            indicator: "orange",
+        });
+        return;
+    }
+    if (!isCash && !frm.doc.bank_account) {
         frappe.msgprint({
             title: __("Bank Account Required"),
             message: __("Please set the Bank Account on this Cheque before creating the Clearance Entry."),
@@ -398,26 +468,28 @@ function _make_clearance_je(frm) {
         });
         return;
     }
-    frappe.confirm(
-        __("Create a Clearance Journal Entry for Cheque {0}?", [frm.doc.name]),
-        () => {
-            frappe.call({
-                method: "cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial.make_clearance_journal_entry",
-                args: { cheque_name: frm.doc.name },
-                freeze: true,
-                freeze_message: __("Creating Clearance Journal Entry…"),
-                callback(r) {
-                    if (r.message) {
-                        frm.reload_doc();
-                        frappe.confirm(
-                            __("Clearance Journal Entry {0} created. Open it now?", [r.message]),
-                            () => frappe.set_route("Form", "Journal Entry", r.message)
-                        );
-                    }
-                },
-            });
-        }
-    );
+
+    const msg = isCash
+        ? __("Create a Cash Clearance Entry for Cheque {0}? (Dr Cash / Cr PDC)", [frm.doc.name])
+        : __("Create a Clearance Journal Entry for Cheque {0}?", [frm.doc.name]);
+
+    frappe.confirm(msg, () => {
+        frappe.call({
+            method: "cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial.make_clearance_journal_entry",
+            args: { cheque_name: frm.doc.name },
+            freeze: true,
+            freeze_message: __("Creating Clearance Entry…"),
+            callback(r) {
+                if (r.message) {
+                    frm.reload_doc();
+                    frappe.confirm(
+                        __("Clearance Journal Entry {0} created. Open it now?", [r.message]),
+                        () => frappe.set_route("Form", "Journal Entry", r.message)
+                    );
+                }
+            },
+        });
+    });
 }
 
 // ---------------------------------------------------------------------------
