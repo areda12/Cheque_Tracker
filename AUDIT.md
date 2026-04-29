@@ -289,150 +289,58 @@ Confirmed: the DocType is declared as a Single. ✅
 
 #### Root cause analysis
 
-The reported symptom is:
+> **REVISED 2026-04-29 after direct verification on dev.**
+> Earlier this section proposed a repair patch for a "missing `tabCheque Tracker Settings` table". That diagnosis was wrong. Both the original symptom and the proposed fix are retracted below; the proposed patch is **dropped** (no Phase 2 work needed for this issue).
 
-> `tabCheque Tracker Settings` MySQL table is missing. Any code path that does `frappe.get_single("Cheque Tracker Settings")` will crash with error 1146.
+**False positive — there is no bug here.**
 
-There are **two separate things** to disentangle here:
+The reported symptom ("`tabCheque Tracker Settings` MySQL table is missing → `frappe.get_single()` will crash with 1146") came from an external probe that ran a `count(*)` query against `tab<DocType>` without first checking `issingle`. For a Single DocType, that table does not exist by design — the per-doctype table query was the problem, not the DocType state.
 
-**Finding B1: For a Single DocType, the absence of `tabCheque Tracker Settings` is normal.**
+A direct `frappe.get_single("Cheque Tracker Settings")` call on dev (`eei-test.f.frappe.cloud`) was performed and confirmed:
 
-In Frappe v14+, DocTypes with `issingle: 1` do **not** have a dedicated `tab<DocType>` table. Their data lives entirely in the global `tabSingles` table (rows of the form `(doctype, field, value)`). So:
+- The DocType meta has `issingle = 1`, matching the JSON.
+- Singles values are stored in the shared `tabSingles` table (rows of the form `(doctype, field, value)`), not in a per-doctype table.
+- `get_single()` returns the singleton doc cleanly with all four declared fields:
+  - `pdc_receivable_account`
+  - `default_bank_account`
+  - `default_bank_gl_account`
+  - `default_cash_account`
+- All four fields are currently null on dev, but the doc itself is healthy.
 
-- A raw query `SELECT * FROM \`tabCheque Tracker Settings\`` correctly returns error 1146 — the table doesn't and shouldn't exist.
-- `frappe.get_single("Cheque Tracker Settings")` should NOT touch that table; it queries `tabSingles` instead.
-- `frappe.get_cached_doc("Cheque Tracker Settings")` (the form used in `cheque_financial.py:_get_pdc_account` etc.) likewise reads from `tabSingles`.
+The Settings DocType is therefore **not** a blocker. No migration patch is required.
 
-**If `frappe.get_single` is genuinely throwing 1146 on dev, then the DocType meta in `tabDocType` has `issingle ≠ 1`, which would cause Frappe to query the dedicated table.** That can happen if:
+#### Open questions — answered
 
-1. An older version of `cheque_tracker_settings.json` shipped with `issingle: 0` and the dev site loaded that first, then was upgraded to v1.1.0. Looking at git history:
-   - `cheque_tracker_settings.json` was first added in `41761fe` (v1.1.0). It already had `issingle: 1`. So this scenario is unlikely *unless* the dev site was hand-installed from a working tree before that commit landed.
-2. The doctype was **created out-of-band** on the dev site (e.g., directly through the desk UI as a non-singleton with the same name) before being overwritten by the JSON.
-3. **Most plausible:** The `reload_doc("cheque_tracker", "doctype", "cheque_tracker_settings")` call inside the v1.1.0 patch ran, but the schema-sync step that propagates `issingle` changes did not run completely. Frappe's `reload_doc` writes the meta to `tabDocType` but defers the schema-sync side effects to `bench migrate`'s sync_for() pass. If that pass crashed midway (e.g., on an unrelated doctype), the Settings doctype could have been left in an inconsistent state.
+| # | Question                                                                                                                                                                       | Answer                                                                                                                                                              |
+|---|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1 | Was the dev site installed from a particular tagged release, or from a hand-built bench?                                                                                       | Installed from tagged release **v1.1.4** on Frappe Cloud (detached HEAD = tag checkout). Migration completed cleanly; both patches ran successfully; no failures.    |
+| 2 | Has anyone touched `Cheque Tracker Settings` directly via the desk UI on dev — e.g., creating a non-singleton DocType with the same name, then deleting it?                    | No. Settings DocType has been a Single since creation (`issingle = 1`). Zero Version log entries. Zero Property Setters. No drift.                                  |
 
-**Finding B2: The Singleton row in `tabSingles` is never created automatically by this app.**
+#### Fix dropped
 
-Even when `issingle=1` is correctly set, Frappe does **not** automatically insert a default row into `tabSingles` on install. The first call to `frappe.get_single` returns an in-memory doc populated from default field values. Field values only persist after the doc is saved.
+The previously-proposed `cheque_tracker/patches/v1_1/initialize_settings_singleton.py` patch is **withdrawn**. Do not create the file in Phase 2. There is nothing to repair on either dev or production.
 
-This means:
+#### Follow-up item (decision needed before production install)
 
-- `_get_pdc_account()` (line 40 of `cheque_financial.py`) calls `settings.pdc_receivable_account`, which is `None` until someone explicitly saves the Settings doc. This raises `"PDC Receivable Account is not configured."` — not error 1146, but functionally a blocker for the financial-posting flow.
-- A site administrator has to remember to open the Cheque Tracker Settings desk page and save it before the app is usable. There is no `after_install` hook to do this.
+The four Settings fields are all null on dev. They are **required** for the financial-posting flow to work end-to-end:
 
-#### The fix
+| Field                       | Used by                                                                                       |
+|-----------------------------|-----------------------------------------------------------------------------------------------|
+| `pdc_receivable_account`    | `_get_pdc_account()` in `cheque_financial.py:40` — fallback when `Cheque.pdc_account` is unset. |
+| `default_bank_account`      | Documented as a default for clearance, but not actually read by any code path (orphan field).  |
+| `default_bank_gl_account`   | `_get_bank_gl_account()` in `cheque_financial.py:69` — fallback when `Cheque.bank_account` resolves to no GL account. |
+| `default_cash_account`      | `_get_cash_gl_account()` in `cheque_financial.py:89` — fallback when `Cheque.cash_account` is unset on cash-clearance flow. |
 
-We need a new patch that:
+If these are unset and a user tries to create a Recording PE / Clearance JE without per-cheque overrides, the helpers explicitly `frappe.throw(...)`. That's a clean failure mode (not data corruption), but it means the app is unusable until an admin populates them.
 
-1. **Forces the DocType meta to match the JSON** (defensive — should be a no-op on a healthy site, but rescues sites where `issingle` drifted).
-2. **Drops a stale `tabCheque Tracker Settings` table** if it exists (only happens if the DocType was previously non-singleton).
-3. **Clears the cached meta** for the DocType.
-4. **Creates the Singleton row in `tabSingles`** by saving the doc (idempotent — re-saving is a no-op when no fields have changed).
+**Decision required:** which of these is the production policy?
 
-**Proposed file:** `cheque_tracker/patches/v1_1/initialize_settings_singleton.py`
+- **(a)** Admins set these fields via the desk UI post-install. The app ships with all-null defaults. Document this in `README.md` install steps.
+- **(b)** The app ships sensible defaults via a fixture or `after_install` hook, with the understanding that ERPNext-specific defaults (PDC asset account, etc.) cannot be hardcoded and must be derived from the company's Chart of Accounts.
 
-**Full code:**
+Recommended approach if going with (b): a Phase 2 task that adds an `after_install` hook which logs a clear warning ("Cheque Tracker Settings: please configure pdc_receivable_account etc. before submitting incoming cheques") and creates the Settings doc by `save()`-ing it (so it's pre-pinned in the desk navigation). This is much smaller than the original proposed patch.
 
-```python
-# Copyright (c) 2024, Ahmed Abbas and contributors
-# License: MIT
-"""
-Patch v1.1.x: Repair Cheque Tracker Settings DocType state.
-
-Idempotent fix for sites where:
-  - The Settings DocType meta has the wrong issingle flag.
-  - A stale `tabCheque Tracker Settings` table exists from a pre-singleton state.
-  - No row exists in `tabSingles` for "Cheque Tracker Settings".
-
-Safe to re-run any number of times.
-"""
-
-import frappe
-
-
-def execute():
-    doctype = "Cheque Tracker Settings"
-
-    # 1. Refresh the DocType meta from the JSON file. Force=True ensures
-    #    that cached fixture data is overwritten on disk-newer JSON.
-    try:
-        frappe.reload_doc("cheque_tracker", "doctype", "cheque_tracker_settings", force=True)
-    except Exception:
-        frappe.log_error(
-            frappe.get_traceback(),
-            f"ChequeTracker: reload_doc failed for {doctype}",
-        )
-
-    # 2. Defensive: ensure tabDocType.issingle = 1 matches the JSON.
-    if frappe.db.exists("DocType", doctype):
-        current_issingle = frappe.db.get_value("DocType", doctype, "issingle")
-        if int(current_issingle or 0) != 1:
-            frappe.db.set_value("DocType", doctype, "issingle", 1)
-
-    # 3. Drop a stale dedicated table if one exists (pre-singleton legacy).
-    table_name = f"tab{doctype}"
-    try:
-        if frappe.db.table_exists(table_name):
-            frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `{table_name}`")
-    except Exception:
-        frappe.log_error(
-            frappe.get_traceback(),
-            f"ChequeTracker: failed to drop stale table {table_name}",
-        )
-
-    # 4. Clear cached meta so subsequent reads see the corrected issingle flag.
-    frappe.clear_cache(doctype=doctype)
-
-    # 5. Ensure the singleton row exists in tabSingles by saving the doc.
-    #    frappe.get_single() returns a doc populated from defaults; .save()
-    #    is a no-op if the row already exists with the same values.
-    try:
-        if not frappe.db.exists("DocType", doctype):
-            return  # extremely defensive — meta missing; nothing to save
-        doc = frappe.get_single(doctype)
-        doc.flags.ignore_permissions = True
-        doc.save()
-    except Exception:
-        frappe.log_error(
-            frappe.get_traceback(),
-            f"ChequeTracker: failed to initialize {doctype} singleton",
-        )
-```
-
-**`patches.txt` line to add (after the existing `v1_1` line):**
-
-```
-cheque_tracker.patches.v1_1.initialize_settings_singleton
-```
-
-#### Why this fix is idempotent
-
-| Scenario                                                       | What the patch does                                                  |
-|----------------------------------------------------------------|----------------------------------------------------------------------|
-| Healthy site, Settings already saved                           | `reload_doc` re-reads JSON (no change). `issingle` already 1 (no-op). No stale table (no-op). `save()` re-writes same values (no-op). |
-| Fresh install, Settings never saved                            | `reload_doc` writes meta. `save()` creates the `tabSingles` rows.    |
-| Site where `issingle=0` drifted                                | `set_value("DocType", ..., "issingle", 1)` corrects it. Stale table dropped if present. Cache cleared. `save()` populates `tabSingles`. |
-| Site where the dedicated table somehow exists with rows        | The DROP discards them. ⚠️ Acceptable because Singles never use this table; any rows would be orphaned and unreadable through the ORM anyway. |
-| Patch re-run after first successful run                        | Every step is guarded; all are no-ops.                               |
-
-#### Recommended companion change (defer to Phase 2 discussion)
-
-The patch above repairs **existing** sites. For **future** installs to be self-healing without relying on the patch, also add an `after_install` hook in `hooks.py`:
-
-```python
-def after_install():
-    # Defer the import so this module is importable when Frappe is not initialised
-    from cheque_tracker.patches.v1_1.initialize_settings_singleton import execute
-    execute()
-```
-
-This is mentioned for completeness; the patch alone resolves the dev-site blocker.
-
-#### Open questions for the user
-
-1. Was the dev site (`eei-test.f.frappe.cloud`) installed from a particular tagged release, or from a hand-built bench? Knowing the install path would confirm whether B1 scenario 3 (mid-`bench migrate` failure) is correct.
-2. Has anyone touched `Cheque Tracker Settings` directly via the desk UI on dev — e.g., creating a non-singleton DocType with the same name, then deleting it? That would explain a stale `tabCheque Tracker Settings` table existing even with `issingle=1` in meta.
-
-These don't change the proposed fix (it covers all branches) but would help confirm the root cause.
+Note also: `default_bank_account` (the `Bank Account` link, not the GL account) appears unused by any read path I could find in the audit. Worth confirming whether to remove the field or wire it up — flagging only, not changing.
 
 ---
 
