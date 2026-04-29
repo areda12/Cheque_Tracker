@@ -344,3 +344,137 @@ Note also: `default_bank_account` (the `Bank Account` link, not the GL account) 
 
 ---
 
+## 4. Python code smells
+
+Each subsection lists every occurrence of the pattern across the app, classifies severity, and notes whether it should be fixed in Phase 2.
+
+Severity legend:
+- **P0** — security or correctness bug, fix before production install.
+- **P1** — likely-incorrect behavior under realistic conditions, fix soon.
+- **P2** — fragile pattern that will bite a future maintainer.
+- **P3** — cosmetic / style.
+
+### 4.1 Bare `except:` and `except Exception:` without re-raise
+
+| File:line                                                                                  | Severity | Code & analysis                                                                                                                                                                                                                                                                                          |
+|--------------------------------------------------------------------------------------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cheque_tracker/cheque_tracker/tasks.py:49`                                                | **P2**   | `except Exception:` inside per-book counter-refresh loop, logged via `frappe.log_error` and continues. Acceptable because a single book failing shouldn't kill the daily job for all books. Counter-refresh failures will be silent unless someone reads error log. Worth narrowing to `(OperationalError, ValidationError)` if scope is known. |
+| `cheque_tracker/tasks.py:49`                                                               | **P3**   | **Identical duplicate** of the above — this file is dead code (see §1, §2). Remove the file in Phase 2.                                                                                                                                                                                                  |
+| `cheque_tracker/patches/v1_0/add_unique_constraint_cheque_leaf.py:25`                      | **P2**   | `except Exception as exc:` with `if "duplicate key name" in str(exc).lower(): pass; else: raise`. Re-raises non-duplicate errors, so it's not silently swallowing. The string-match is locale-fragile (see §3 Patch 1).                                                                                  |
+| `cheque_tracker/cheque_tracker/doctype/cheque_batch/cheque_batch.py:44`                    | **P1**   | Inside `_mark_cheques_deposited`. If marking one cheque as Deposited fails, logs the traceback and continues to the next row. Means a Cheque Batch can submit "successfully" while leaving some of its child cheques in their previous status. **Worth tightening:** either re-raise (making batch submit atomic) or surface the failures back to the user via `frappe.msgprint`. |
+| `cheque_tracker/cheque_tracker/doctype/cheque_leaf/test_cheque_leaf.py:70`                 | **P3**   | Test code, captures errors from threaded `do_reserve` to surface them in the assertion. Fine.                                                                                                                                                                                                            |
+
+**Verdict:** No bare `except:` (good — every catch specifies `Exception` at minimum). One **P1** in `cheque_batch.py` is the only one I'd actively change.
+
+### 4.2 `frappe.db.commit()` calls
+
+| File:line                                                                                  | Severity | Justification provided?                                                                                                                                                                                                                                                                                                              |
+|--------------------------------------------------------------------------------------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cheque_tracker/patches/v1_0/add_unique_constraint_cheque_leaf.py:24`                      | **P3**   | After a single DDL `ALTER TABLE ADD UNIQUE INDEX`. DDL auto-commits in MySQL, so the explicit commit is redundant. Harmless.                                                                                                                                                                                                          |
+| `cheque_tracker/patches/v1_1/add_financial_posting_fields.py:34`                           | **P2**   | **Inside a `for` loop** that iterates 5 columns. Same DDL-auto-commit reasoning — functionally redundant — but the pattern of `db.commit()` inside a loop is exactly the kind of red flag the audit prompt called out. Acceptable here because each statement is independent DDL, but it should be moved out of the loop or removed. |
+| `cheque_tracker/cheque_tracker/doctype/cheque/cheque.py:205`                               | **P0** ⚠️ | **Real bug.** Inside `_handle_outgoing_leaf_reservation` (called from `before_save`) the code calls `frappe.db.begin()`, runs `reserve_leaf()`, then `frappe.db.commit()`. Frappe's outer save() is itself wrapped in a transaction; calling `db.commit()` here **commits the outer transaction prematurely**. If anything later in `before_save` (`_validate_outgoing_cheque_no()`, `_protect_fields_if_submitted_accounting_docs()`) raises, the leaf reservation is already committed and irreversible — a rollback at that point cannot undo it. Discussed further in §6. |
+
+**P0 fix sketch (defer to Phase 2):** the `db.begin() / commit() / rollback()` block in `_handle_outgoing_leaf_reservation` should be replaced with a `frappe.db.savepoint()` (Frappe 14+) so the leaf reservation can be released cleanly if a later validation fails. The `reserve_leaf` function itself uses `SELECT … FOR UPDATE`, which already provides the row-level locking needed.
+
+### 4.3 `frappe.db.sql(...)` writes that bypass the ORM
+
+| File:line                                                                                  | Statement                                                                                                                  | Justified?                                                                                                                                                |
+|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cheque_tracker/patches/v1_0/add_unique_constraint_cheque_leaf.py:17`                      | `ALTER TABLE \`tabCheque Leaf\` ADD UNIQUE INDEX ...`                                                                       | ✅ DDL — must use SQL, no ORM equivalent.                                                                                                                  |
+| `cheque_tracker/patches/v1_1/add_financial_posting_fields.py:31`                           | `ALTER TABLE \`tabCheque\` ADD COLUMN ...`                                                                                  | ✅ DDL — but should prefer `frappe.db.add_column()` if available; pattern is fragile (see §3 Patch 2).                                                     |
+| `cheque_tracker/cheque_tracker/doctype/cheque_book/cheque_book.py:120`                     | `SELECT leaf_status, COUNT(*) ... GROUP BY leaf_status` (read)                                                              | ✅ Aggregation — ORM has `frappe.db.count()` but it doesn't group; SQL is appropriate.                                                                     |
+| `cheque_tracker/cheque_tracker/doctype/cheque_book/cheque_book.py:143`                     | `UPDATE \`tabCheque Leaf\` SET leaf_status='Cancelled', modified=NOW() WHERE cheque_book=%s AND leaf_status='Unused'`        | **P2** — bypasses `frappe.db.set_value` and therefore skips Document hooks (no `Cheque Leaf.before_save`/`on_update` runs). Cheque Leaf doesn't have hooks today, so this is safe today but fragile. Also bypasses `track_changes:1` audit on Cheque Leaf. |
+| `cheque_tracker/cheque_tracker/doctype/cheque_leaf/cheque_leaf.py:48`                      | `SELECT ... FROM \`tabCheque Leaf\` ... FOR UPDATE` (concurrency lock)                                                      | ✅ `FOR UPDATE` row-locking has no ORM equivalent. Required for atomic leaf reservation. Justified and correct.                                            |
+| `cheque_tracker/cheque_tracker/doctype/cheque_leaf/cheque_leaf.py:73`                      | `UPDATE \`tabCheque Leaf\` SET leaf_status='Reserved', ... WHERE name=%s AND leaf_status='Unused'`                          | ✅ Conditional update with double-check on `leaf_status='Unused'` — the second guard against the race window. Justified.                                   |
+| `cheque_tracker/cheque_tracker/doctype/cheque_leaf/cheque_leaf.py:88`                      | `SELECT ROW_COUNT() AS r`                                                                                                   | ✅ MariaDB-specific row-count fetch. Justified.                                                                                                            |
+| `cheque_tracker/cheque_tracker/report/{4 reports}.py`                                      | `SELECT ... FROM \`tabCheque[ Book]\` WHERE ... ORDER BY ...` (read)                                                        | ✅ Reports — read-only joins and aggregations are SQL by convention in Frappe Script Reports. All four files use parameterized values (`%(name)s`) — see §4.7. |
+
+**Verdict:** No `INSERT` or `DELETE` raw writes. All `UPDATE`s are scoped to the leaf-allocation flow which legitimately needs row-locking. The only nit is `cheque_book.py:143`, which could be replaced by `frappe.db.set_value("Cheque Leaf", {filters}, ...)` but this is **P2** and not worth changing.
+
+### 4.4 Missing `@frappe.whitelist()` on functions called from JS
+
+Every method called via `frappe.call({ method: ... })` from a JS controller was checked. Findings:
+
+| JS call site                                                                                              | Target                                                                                                  | Whitelisted? |
+|-----------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|--------------|
+| `cheque/cheque.js:431`                                                                                    | `cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial.make_recording_payment_entry`            | ✅            |
+| `cheque/cheque.js:478`                                                                                    | `cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial.make_clearance_journal_entry`            | ✅            |
+| `cheque/cheque.js:503`                                                                                    | `cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial.process_bounce`                          | ✅            |
+| `cheque/cheque.js:534` & `public/js/cheque_tracker.js:164`                                                | `cheque_tracker.cheque_tracker.doctype.cheque.cheque.change_cheque_status`                              | ✅            |
+| `public/js/cheque_tracker.js:85`                                                                          | `cheque_tracker.cheque_tracker.doctype.cheque.cheque.hand_over_cheque`                                  | ✅            |
+
+**No misses.** Every JS-invoked Python method has `@frappe.whitelist()`.
+
+**Adjacent finding:** `cheque_tracker/cheque_tracker/doctype/cheque_book/cheque_book.py:169` — `get_book_counters` is whitelisted but is **not called from any JS or Python** in this repo. It looks like a dashboard endpoint that was never wired up. Either it's a stub for an unfinished feature, or it's dead code. Flagging only — see §4.5 below for the related permission gap.
+
+### 4.5 Missing permission guards on whitelisted methods
+
+For each `@frappe.whitelist()` function, checked for a `frappe.has_permission(...)` call (or equivalent) in the body.
+
+| Function                                                                                | `has_permission` call?                                                                | Severity | Notes                                                                                                                                                                                                                                                                                                |
+|------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cheque.change_cheque_status`                                                            | ✅ `frappe.has_permission("Cheque", "write", doc=doc, throw=True)` (line 347)         | ✅ ok    | Correct. Workflow transitions are write operations.                                                                                                                                                                                                                                                  |
+| `cheque.hand_over_cheque`                                                                | ✅ line 405                                                                            | ✅ ok    | Correct.                                                                                                                                                                                                                                                                                             |
+| `cheque_financial.make_recording_payment_entry`                                          | ✅ line 156                                                                            | ✅ ok    | Correct. Note: a stricter check (`frappe.has_permission("Payment Entry", "create", throw=True)`) would also be reasonable since the function creates a new Payment Entry. Currently relies on the user already having Cheque write — Treasury User has it, Accounts User has it. Acceptable.        |
+| `cheque_financial.make_clearance_journal_entry`                                          | ✅ line 267                                                                            | ✅ ok    | Same caveat — also creates a Journal Entry but only checks Cheque write. Practical risk is low because Treasury / Accounts roles have JE create perms in standard ERPNext setups.                                                                                                                  |
+| `cheque_financial.process_bounce`                                                        | ✅ line 375                                                                            | ✅ ok    | Same caveat. Worth considering `frappe.only_for(["Treasury User", "Accounts User", "System Manager"])` for a stricter role gate, since bounce processing is a financially sensitive operation. **P2 suggestion**, not a P0 gap.                                                                       |
+| `cheque_book.get_book_counters`                                                          | ❌ **none**                                                                            | **P1**   | No permission check at all. Returns counter values for any Cheque Book name passed in. Cheque Book is reportable to Treasury / Accounts / Auditor, so the data is not strictly secret, but a guest-session call with a guessed book name would still leak counts. Add `frappe.has_permission("Cheque Book", "read", doc=cheque_book, throw=True)` at the top. |
+
+**Verdict:** One **P1** gap on `get_book_counters`. The other five whitelisted functions all have explicit `has_permission` checks; the only suggestion is to consider stricter role gates on the financially-sensitive ones.
+
+### 4.6 Hard-coded company names, account names, user emails
+
+Searched the entire codebase for hardcoded literals of these types.
+
+| Category                | Findings                                                                                                                                            |
+|-------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Company names           | None.                                                                                                                                               |
+| GL account names        | None in app code. Test fixture creates `"PDC Receivable - Test"` in `test_cheque_financial.py:36` — appropriate for tests.                          |
+| User emails             | `"ahmed@example.com"` in `cheque_tracker/hooks.py:5` and `pyproject.toml:4` (both `app_email` / `authors`). Placeholder values, not a security bug. |
+| Bank / customer names   | None.                                                                                                                                               |
+| Workflow / status enums | Many string literals like `"Received"`, `"Cleared"`, `"Bounced"` throughout `cheque.py`, hooks, tasks. This is normal Frappe style — the workflow state names are an external contract. Not a smell. |
+| Role names              | `"Treasury User"`, `"Accounts User"`, `"Cheque Auditor"`, `"System Manager"` referenced from `hooks.py` (fixtures filter), JS (`has_role` checks), and JSON perms. Same — the role names are an external contract. Not a smell. |
+
+**Verdict:** Clean. The only "hardcoded" items are the placeholder email and the enum strings, which are fine.
+
+### 4.7 SQL string interpolation (f-strings) instead of parameterised queries
+
+Every f-string'd `frappe.db.sql(...)` call was traced back to confirm whether the interpolated values come from user input or trusted literals.
+
+| File:line                                                                                                | Interpolated tokens                                                | Source of tokens                                                                                                                          | Severity |
+|----------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|----------|
+| `cheque_tracker/patches/v1_1/add_financial_posting_fields.py:32`                                         | `{col_name}`, `{col_type}`                                         | Hardcoded literal dict at lines 19-25. **Not** user-controlled.                                                                            | **P2**   |
+| `cheque_tracker/cheque_tracker/report/cheque_book_utilization/cheque_book_utilization.py:38`             | `{" AND ".join(conds)}`                                            | `conds` is a list of literal strings like `"company = %(company)s"` (line 32). User-supplied filter values are bound via `%(name)s` placeholders against the `values` dict (line 46). | **P2**   |
+| `cheque_tracker/cheque_tracker/report/deposited_not_cleared/deposited_not_cleared.py:41`                 | `{" AND ".join(conds)}`                                            | Same pattern.                                                                                                                              | **P2**   |
+| `cheque_tracker/cheque_tracker/report/bounced_cheques_register/bounced_cheques_register.py:46`           | `{" AND ".join(conds)}`                                            | Same pattern.                                                                                                                              | **P2**   |
+| `cheque_tracker/cheque_tracker/report/cheques_due_this_week/cheques_due_this_week.py:47`                 | `{" AND ".join(conds)}`                                            | Same pattern.                                                                                                                              | **P2**   |
+
+**Verdict:** **No SQL injection vector found.** Every f-string interpolation either uses hardcoded literals or interpolates literal *condition fragments* whose user-supplied values are bound separately via `%(name)s`. The pattern is widely used in Frappe core itself. Severity is **P2** because a future maintainer copy-pasting the pattern with a *user-supplied* string would create an injection. Not worth changing in Phase 2 unless a scan tool flags it.
+
+### 4.8 `ignore_permissions = True` density
+
+Not on the original checklist but worth flagging because of the volume.
+
+`ignore_permissions = True` appears **30 times** across the app code (excluding tests):
+- 6 in `cheque_financial.py` (PE / JE creation, cheque-event append paths)
+- 4 in PE / JE doc-event hook handlers (necessary — handlers run as the PE submitter, who may not have Cheque write perm if Cheque is restricted)
+- 2 in `cheque_book.py` (leaf insert during book submit)
+- 1 in `cheque.py` (`_flush_events` re-save)
+
+Every use is **defensive and reasonable** — these are all internal mutations triggered by an action the user already had permission for, on a doc the user may not directly have write perms on. The pattern is the standard Frappe idiom. The whitelisted entry-point functions all do their own `has_permission` checks before delegating to these helpers, so there's no privilege escalation.
+
+**Recommendation:** No change. Listing here only for transparency.
+
+### 4.9 Summary table — what to fix in Phase 2
+
+| ID | Severity | File:line                                                                          | Issue                                                                  | Section reference                |
+|----|----------|------------------------------------------------------------------------------------|------------------------------------------------------------------------|----------------------------------|
+| C1 | **P0**   | `cheque/cheque.py:205`                                                             | `db.begin/commit/rollback` inside `before_save` commits outer txn early | §4.2, also §6 (PE/JE walkthrough) |
+| C2 | **P1**   | `cheque_book/cheque_book.py:169` (`get_book_counters`)                             | Whitelisted endpoint with no `has_permission` check                    | §4.5                             |
+| C3 | **P1**   | `cheque_batch/cheque_batch.py:44` (`_mark_cheques_deposited`)                       | Swallows per-cheque errors silently; batch can submit with partial state | §4.1                             |
+| C4 | **P3**   | `cheque_tracker/tasks.py` (top-level)                                              | Byte-identical duplicate of `cheque_tracker/cheque_tracker/tasks.py`    | §1, §2, §4.1                     |
+
+C1 is the only true blocker. C2 and C3 are recommended fixes before production install. C4 is cleanup.
+
+---
+
