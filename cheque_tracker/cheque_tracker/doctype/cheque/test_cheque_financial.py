@@ -141,6 +141,8 @@ def _make_incoming_cheque(company, customer, currency, pdc_account=None):
         chq.pdc_account = pdc_account
     chq.flags.ignore_permissions = True
     chq.insert()
+    chq = frappe.get_doc("Cheque", chq.name)  # fresh fetch — after_insert hook bumped modified
+    chq.flags.ignore_permissions = True       # re-set flags on the fresh doc
     chq.submit()
     chq.reload()
     return chq
