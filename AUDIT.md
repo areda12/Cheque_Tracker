@@ -608,4 +608,26 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 24. `_append_event_and_save` (`journal_entry_hooks.py:29-41`) loads the cheque, appends a `Cleared` event with `reference_doctype="Journal Entry"`, `reference_name=je.name`, notes `"Clearance Journal Entry {name} submitted. Funds moved from PDC Receivable to {Bank|Cash}."`, sets both `ignore_permissions` and `ignore_validate_update_after_submit` flags, and saves.
 25. Flow ends. Final state: Cheque `docstatus=1`, `status="Cleared"`, `cleared_date=today()`, `clearance_journal_entry=JE-name`, audit table contains a `Cleared` event referencing the submitted JE. JE `docstatus=1` with GL entries posted by ERPNext core.
 
+#### Risks identified
+
+**E1 — Auto-submit vs draft**
+*Severity:* **P3** (current behavior is the safer default).
+*Description:* `make_clearance_journal_entry` calls `je.insert()` only — the JE is left as Draft and the user must click Submit to post GL. Same trade-off as Flow A D1: Draft preserves ERPNext's submit-time validation gates (period closed, account active, etc.) and lets the user review before posting; cost is one extra click.
+*Phase 2 recommendation:* Keep Draft as the default. Mirror any auto-submit toggle introduced for Flow A D1 here.
+
+**E2 — Cheque "uncleared" reversal does not cancel the JE**
+*Severity:* **P1**.
+*Description:* The JE-submit hook sets cheque status to `Cleared`, but the reverse path is asymmetric. `_validate_transition` in `cheque.py:381-387` blocks transitions **into** `Cleared` (must go through JE submit), but does **not** block transitions **away from** `Cleared`. A user can call `change_cheque_status(name, "Received")` (or any other status) on a Cleared cheque and the cheque state will diverge from the JE state — the submitted clearance JE remains, GL stays posted, but the cheque is no longer marked Cleared. The only sanctioned reversal path is JE cancel, which then triggers `_handle_clearance_je_cancel` and rolls cheque status back to `Received` (hard-coded fallback already flagged in §2).
+*Phase 2 recommendation:* In `_validate_transition`, add a guard: if `doc.status == "Cleared"` and `new_status != "Cleared"`, `frappe.throw("Cheque is Cleared. Cancel the Clearance Journal Entry to revert.")`.
+
+**E3 — Idempotency of clearance creation**
+*Severity:* **P3**.
+*Description:* `make_clearance_journal_entry` guards on `cheque.clearance_journal_entry` and dispatches by linked-JE `docstatus`: `0` updates the Draft and returns its name; `1` shows a msgprint and returns the same name; `2` (cancelled) correctly falls through to create a fresh JE. So re-clicking the button does not create duplicates under normal operation. The same theoretical race noted in Flow A D4 exists here — between `je.insert()` (line 325) and `_set_cheque_fields` (line 327), two concurrent clicks could both pass the idempotency check and both insert. Practical window is sub-millisecond.
+*Phase 2 recommendation:* No code change required. If the race is ever observed, wrap lines 279-327 in a `frappe.db.savepoint("clearance_je")` and add a `SELECT ... FOR UPDATE` row-lock on the Cheque before the idempotency check.
+
+**E4 — Error UX when Settings account fields are unpopulated**
+*Severity:* **P3** (current messages are clear).
+*Description:* All three resolvers used by Flow B raise actionable `frappe.throw` messages naming both the per-cheque field and the Settings field that could fix the error: `_get_pdc_account` ("PDC Receivable Account is not configured. Please set it in Cheque Tracker Settings or on the Cheque itself."), `_get_bank_gl_account` ("Bank GL Account could not be resolved. Set the Bank Account on the Cheque or configure Cheque Tracker Settings."), `_get_cash_gl_account` ("Cash GL Account could not be resolved. Set the Cash Account on the Cheque or configure Cheque Tracker Settings."). The JS layer also pre-flights `cash_account` / `bank_account` presence in `_make_clearance_je` (`cheque.js:455-470`) and shows an orange `frappe.msgprint` before any server round-trip — so misconfigured users see a friendly modal, not a stack trace.
+*Phase 2 recommendation:* No code change. The Settings-field-population decision from §3 is the only outstanding action; current messaging is compatible with either choice.
+
 ---
