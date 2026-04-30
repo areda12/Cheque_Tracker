@@ -78,9 +78,46 @@ class Cheque(Document):
                     status="Voided",
                     void_reason=f"Cheque {self.name} cancelled.",
                 )
+
+        # D2: Clean up Draft accounting docs FIRST so that the subsequent
+        # _append_event_and_save (logging the Cancelled event) sees a clean
+        # cheque state. If we logged the event first then deleted the draft
+        # PE, we'd have an event row pointing at a now-deleted PE —
+        # recreating G2-style audit trail issues.
+        #
+        # Submitted (docstatus=1) PEs/JEs are not touched here — they have
+        # their own cancellation hooks in payment_entry_hooks /
+        # journal_entry_hooks, and they are also already blocked above by
+        # _has_submitted_accounting_docs(). Cancelled (docstatus=2) docs
+        # are no-ops.
+        self._delete_draft_if_any("Payment Entry", "recording_payment_entry")
+        self._delete_draft_if_any("Journal Entry", "clearance_journal_entry")
+        self._delete_draft_if_any("Journal Entry", "reversal_journal_entry")
+
         self._append_event("Cancelled", notes="Cheque cancelled.")
         frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
         self._flush_events()
+
+    def _delete_draft_if_any(self, doctype: str, fieldname: str):
+        """
+        If self has a linked accounting doc (PE or JE) and that doc is
+        still in Draft (docstatus=0), delete it and clear the back-link
+        on the cheque. Used by on_cancel to prevent orphan Draft PE/JE
+        from being submitted later against a cancelled cheque.
+        """
+        docname = self.get(fieldname)
+        if not docname:
+            return
+        docstatus = frappe.db.get_value(doctype, docname, "docstatus")
+        if docstatus != 0:
+            # Submitted: blocked above. Cancelled: nothing to clean.
+            return
+        frappe.delete_doc(
+            doctype, docname,
+            ignore_permissions=True,
+            force=True,
+        )
+        frappe.db.set_value("Cheque", self.name, fieldname, None)
 
     def on_update_after_submit(self):
         """
@@ -319,13 +356,44 @@ class Cheque(Document):
         """
         Persist any in-memory events that have not yet been saved to DB.
         Re-fetches the doc so we only INSERT genuinely new rows.
+
+        Special handling for docstatus=2 (cancelled): Frappe forbids
+        save() on cancelled docs (check_docstatus_transition), so we
+        write event rows via direct child-doc insert. The audit trail
+        must capture the cancellation event regardless.
         """
         new_events = [e for e in (self.events or []) if not e.get("name")]
         if not new_events:
             return
+
         persisted = frappe.get_doc("Cheque", self.name)
+
+        if persisted.docstatus == 2:
+            # G3: cancelled docs cannot be saved. Direct-insert each
+            # event row so the audit trail is preserved.
+            base_idx = (max((e.idx for e in persisted.events), default=0)) + 1
+            for i, ev in enumerate(new_events):
+                child = frappe.new_doc("Cheque Event")
+                child.update({
+                    "parent":            persisted.name,
+                    "parenttype":        "Cheque",
+                    "parentfield":       "events",
+                    "idx":               base_idx + i,
+                    "event_type":        ev.event_type,
+                    "event_datetime":    ev.event_datetime or frappe.utils.now_datetime(),
+                    "from_holder":       ev.from_holder,
+                    "to_holder":         ev.to_holder,
+                    "location":          ev.location,
+                    "reference_doctype": ev.reference_doctype,
+                    "reference_name":    ev.reference_name,
+                    "notes":             ev.notes,
+                })
+                child.db_insert()
+            return
+
+        # Normal path (docstatus 0 or 1): save() handles validation
         for ev in new_events:
-            persisted.append("events", ev)
+            persisted.append("events", ev.as_dict())
         persisted.flags.ignore_permissions = True
         # Required for submitted docs: Frappe blocks child-table changes
         # after submission unless this flag is set.
