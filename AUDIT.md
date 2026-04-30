@@ -541,4 +541,26 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 *Description:* `Cheque.on_submit` does not create a PE — it only writes status/event rows. PE creation is exclusively user-triggered via the whitelisted `make_recording_payment_entry`, which guards on `cheque.recording_payment_entry` (returns existing Draft / existing Submitted; only creates new when status is `2` or unset). A duplicate PE from re-submission of the cheque is therefore not possible. A theoretical race exists between `pe.insert()` (line 227) and `_set_cheque_fields` (line 230) if two concurrent button clicks beat the link write, but the window is sub-millisecond.
 *Phase 2 recommendation:* No code change required. If the race is ever observed, wrap lines 174-230 in a `frappe.db.savepoint("recording_pe")` and add a `SELECT ... FOR UPDATE` row-lock on the Cheque before the idempotency check.
 
+**D5 — Transaction safety / rollback discipline**
+*Severity:* **P2**.
+*Description:* `make_recording_payment_entry` does **not** contain the C1 anti-pattern — there is no `frappe.db.begin/commit/rollback` inside the body, so the function correctly inherits the request's outer transaction. However, `pe.insert()` (line 227) and `_set_cheque_fields(...)` (line 230) are not wrapped in a `frappe.db.savepoint`. If `_set_cheque_fields` fails (e.g., a deadlock on `tabCheque`), the PE row exists in the same uncommitted transaction; an outer rollback will undo both, but a partial commit caused by an intermediate `frappe.db.commit()` elsewhere in the request would leave a Draft PE with no back-link.
+*Phase 2 recommendation:* Wrap lines 174-230 in a single `with frappe.db.savepoint("make_recording_pe"):` block, and ensure no helper inside that block calls `frappe.db.commit()`.
+
+**D6 — `ignore_permissions = True` on PE creation**
+*Severity:* **P2**.
+*Description:* `pe.flags.ignore_permissions = True` is set before `pe.insert()` (line 226) and again in `_update_recording_pe` (line 247). This bypasses ERPNext's standard `Payment Entry: create` / `write` permission check. Justification is that the whitelisted entry point already verified `frappe.has_permission("Cheque", "write")`. Net effect: a Treasury User who has Cheque write but lacks Payment Entry create rights can still create PEs through this path.
+*Phase 2 recommendation:* For tighter discipline, add an explicit `frappe.has_permission("Payment Entry", "create", throw=True)` check at the top of `make_recording_payment_entry` (and similarly for the JE flow). If EEI's Treasury role is intended to be able to create PEs, this is a no-op; if not, it surfaces the gap.
+
+**D7 — Multi-company / multi-currency assumptions**
+*Severity:* **P2** (informational for EEI's single-company / single-currency setup).
+*Description:* Two hardcoded assumptions:
+- `pe.source_exchange_rate = pe.target_exchange_rate = 1` (lines 201-202). If `cheque.currency != company.default_currency`, the PE will post with a wrong FX rate.
+- `Cheque Tracker Settings.pdc_receivable_account` is a single global value — fine when Settings is `issingle=1` and there's one company, but breaks if a multi-company site uses one Settings doc for all companies. The per-cheque `pdc_account` override mitigates this manually but there is no validation that the chosen account belongs to `cheque.company`.
+*Phase 2 recommendation:* No change required for EEI's current scope. If multi-company / multi-currency is ever in play, replace exchange rates with `erpnext.setup.utils.get_exchange_rate(cheque.currency, company_currency, posting_date)` and add a company-scope validation on `pdc_account` (the linked Account row's `company` field must equal `cheque.company`).
+
+**D8 — Error UX when Settings account fields are unpopulated**
+*Severity:* **P3** (current messages are clear).
+*Description:* Three account-resolver helpers (`_get_pdc_account`, `_get_receivable_account`, `_get_bank_gl_account` — the last fires later in Flow B but shares the pattern) raise actionable `frappe.throw` messages naming both the source (Cheque field or Settings) and the missing field. Example: `"PDC Receivable Account is not configured. Please set it in Cheque Tracker Settings or on the Cheque itself."` A user with no Settings populated and no per-cheque override will see this message immediately on clicking *Create Recording Payment Entry*; no cryptic stack trace surfaces.
+*Phase 2 recommendation:* No code change. The Settings-field-population decision called out in §3 (option (a) admin-configures vs (b) ship defaults) is the only outstanding action; either choice is compatible with current error messaging.
+
 ---
