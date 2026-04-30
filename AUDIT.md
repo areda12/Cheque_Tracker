@@ -653,3 +653,110 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 *Phase 2 recommendation:* Fix E2 (block transitions away from `Cleared` unless the JE is cancelled) — that closes the data-integrity hole. Additionally, mark `clearance_journal_entry` / `recording_payment_entry` / `reversal_journal_entry` as `read_only: 1, allow_on_submit: 0` (or remove `allow_on_submit` — currently `1` per `cheque.json`) to prevent ad-hoc clearing of the link from the desk.
 
 ---
+
+## 6. Test coverage
+
+### Test file inventory
+
+Four `test_*.py` files exist, all under `cheque_tracker/cheque_tracker/doctype/`. No top-level `tests/` directory; no test for the scheduler, hooks, reports, or batch flow.
+
+#### `cheque_book/test_cheque_book.py` — 9 tests, 137 LOC
+- `make_cheque_book(...)` factory (used by other test files).
+- `test_leaf_count_on_numeric_range` — book with start=1 end=10 generates 10 leaves on submit.
+- `test_leaf_sequence_values` — leaf cheque_no values match the numeric range.
+- `test_zero_padded_leaves` — `digits_count=6` produces `000001`-style padding.
+- `test_prefixed_leaves` — `prefix="CHK-"` + `digits_count=3` produces `CHK-001`-style numbers.
+- `test_status_becomes_active_on_submit` — book status transitions Draft → Active.
+- `test_unused_counter_set_after_submit` — `unused_leaves` counter is correct.
+- `test_bank_account_company_mismatch_raises` — `_validate_bank_account_company` rejects cross-company assignments.
+- `test_end_before_start_raises` — `end_cheque_no < start_cheque_no` raises ValidationError.
+- `test_cancel_voids_unused_leaves` — book cancel marks all 6 leaves as Cancelled.
+
+#### `cheque_leaf/test_cheque_leaf.py` — 7 tests, 94 LOC
+- `test_reserve_marks_status_reserved` — `reserve_leaf()` flips status to Reserved.
+- `test_reserve_links_cheque` — reservation writes the linking cheque name.
+- `test_issued_leaf_not_reserved_again` — already-Issued leaves are skipped by next reservation.
+- `test_voided_leaf_not_reserved_again` — already-Voided leaves are skipped.
+- `test_exhausted_book_raises` — third reservation against a 2-leaf book raises ValidationError.
+- `test_concurrent_reservation_gets_distinct_leaves` — two threads reserve two different leaves (the `SELECT ... FOR UPDATE` concurrency invariant).
+- `test_duplicate_leaf_in_book_raises` — `before_insert` duplicate guard fires.
+
+#### `cheque/test_cheque.py` — 9 tests, 147 LOC
+- `_outgoing(...)` factory — creates and inserts an Outgoing cheque against a submitted book.
+- `test_outgoing_reserves_leaf_on_save` — leaf reservation in `_handle_outgoing_leaf_reservation`.
+- `test_outgoing_cheque_no_matches_leaf` — `cheque.cheque_no` synced from the leaf.
+- `test_submit_marks_leaf_issued` — `_mark_leaf_issued_on_submit` transitions leaf to Issued.
+- `test_cancel_voids_leaf` — Cheque cancel marks linked leaf as Voided.
+- `test_cleared_cheque_cannot_cancel` — manual status=Cleared then cancel raises ValidationError (note: status is force-written via `db.set_value` in the test, not via the JE flow).
+- `test_two_cheques_get_different_leaves` — second cheque receives a different leaf.
+- `test_manual_cheque_no_override_raises` — `_validate_outgoing_cheque_no` blocks manual override.
+- `test_incoming_cheque_no_book_required` — Incoming cheques accept any cheque_no without a book.
+- `test_event_created_on_insert` — `after_insert` audit event row is appended.
+
+#### `cheque/test_cheque_financial.py` — 8 tests, 419 LOC
+Sets up `Cheque Tracker Settings` with PDC + Bank GL accounts in `setUp`. Each test creates an Incoming cheque and exercises:
+- `test_make_recording_pe_creates_draft` — PE created with correct payment_type, party, paid_to, paid_amount, and back-link.
+- `test_recording_pe_submit_sets_cheque_received` — PE submit transitions cheque to `Received` and logs an event referencing the PE.
+- `test_clearance_je_submit_sets_cheque_cleared` — full PE-then-JE chain ends with cheque `Cleared` and `cleared_date` set.
+- `test_bounce_after_submitted_pe_creates_reversal_je` — `process_bounce` creates a Draft reversal JE; submitting it marks cheque `Bounced`.
+- `test_bounce_cancels_draft_pe` — `process_bounce` against a Draft PE cancels the PE and marks cheque `Bounced` immediately (no JE created).
+- `test_idempotent_recording_pe` — calling `make_recording_payment_entry` twice returns the same PE name.
+- `test_no_new_pe_after_submit` — calling again after PE submit does not create a new PE.
+- `test_clearance_je_cancel_rolls_back_status` — JE cancel rolls cheque back to `Received`.
+- `test_protected_fields_blocked_after_pe_submit` — editing `amount` after PE submit raises ValidationError. *(9th test — the file actually contains 9 not 8 despite the docstring claim of 8.)*
+
+### Test run status
+
+I cannot execute `bench --site eei-test.f.frappe.cloud run-tests --app cheque_tracker` from this sandbox — there is no `bench` binary here and the dev site lives on Frappe Cloud. **Pass/fail status is not verified in this audit.** Please run the command and paste the output; I'll fold the results into this section in a follow-up commit.
+
+That said, two structural issues in the existing tests are visible from static reading:
+- Several tests `skipTest()` if no `Company` / `Bank Account` / `Customer` / default receivable account is present on the test site. On a freshly-bootstrapped CI site this means most of `test_cheque_financial.py` will silently skip.
+- `test_cheque_financial.py` line 5 docstring says "8 tests" but defines 9. Cosmetic.
+
+### Coverage gaps
+
+The existing tests cover unit-level invariants well (leaf reservation, idempotency, individual status transitions). The gaps below all map to risks identified earlier in this audit.
+
+**Flow A end-to-end with GL assertions (D1, D6, §5)**
+- `test_recording_pe_submit_sets_cheque_received` asserts cheque status and event but **does not query `tabGL Entry`** to confirm `Dr PDC, Cr AR` for `cheque.amount`. A regression that swapped `paid_from` and `paid_to` would still pass.
+- No test covers the SI-allocation branch (`reference_doctype == "Sales Invoice"` → `pe.references` row).
+- No test covers the `pe.flags.ignore_permissions = True` permission-bypass path; running the test as a Treasury User without PE create rights would expose D6 but no such fixture exists.
+
+**Flow B end-to-end with GL assertions (E1, E7)**
+- `test_clearance_je_submit_sets_cheque_cleared` asserts cheque status / `cleared_date` but **does not query `tabGL Entry`** to confirm `Dr Bank, Cr PDC` for `cheque.amount`.
+- No test for the cash clearance flow (`clearance_type == "Cash"` → `cash_account` debit). The entire v1.1.4 cash branch is untested.
+- No multi-currency test (E7) — the missing `account_currency` / `exchange_rate` on JE rows is not exercised.
+
+**Cancellation paths (D2, D3)**
+- No test for "Cheque on_cancel cancels orphan Draft PE" (D2) — it can't, because the behavior doesn't exist yet. The placeholder is needed for Phase 2.
+- No test for amend → orphan Draft PE remediation (D3).
+
+**C1 transaction-safety bug (`cheque.py:205`)**
+- No test asserts that a failure later in `before_save` rolls back the leaf reservation. To exercise this you'd need to monkey-patch `_validate_outgoing_cheque_no` to raise after `_handle_outgoing_leaf_reservation` has called `frappe.db.commit()`, then assert the leaf is back to `Unused`. This is the most important missing test in the suite.
+
+**E2 state-asymmetry bug**
+- No test asserts that calling `change_cheque_status(name, "Received")` on a Cleared cheque is blocked. Today it is not blocked, so a test would correctly fail and expose the bug.
+
+**E8 writable-link-post-submit bug**
+- No test asserts that `clearance_journal_entry` / `recording_payment_entry` / `reversal_journal_entry` cannot be cleared via direct `frappe.db.set_value` after submit. (Frappe enforces field-level `allow_on_submit` from JSON; today these are `allow_on_submit: 1`, so a test would correctly demonstrate the editability.)
+
+**Other untested surfaces (informational, lower priority)**
+- `cheque_batch.py` — zero tests for batch validation, totals, `_mark_cheques_deposited` error swallowing (C3).
+- `tasks.auto_update_cheque_statuses` — no test for the daily scheduler path (overdue logging, counter refresh).
+- `cheque.hand_over_cheque` whitelist — no test.
+- `cheque_book.get_book_counters` whitelist — no test (also missing `has_permission`, see C2).
+- 4 Script Reports — none of the report `.py` files have any test coverage; SQL conditional logic (filters, ordering, aging buckets) is unverified.
+
+### Phase 2 recommendation (test additions)
+
+In priority order:
+1. Happy-path Flow A end-to-end with GL assertions (`Dr PDC, Cr AR` after PE submit).
+2. Happy-path Flow B end-to-end with GL assertions (`Dr Bank|Cash, Cr PDC` after JE submit).
+3. C1 regression test (rollback on later validation failure).
+4. E2 regression test (no transition out of Cleared without JE cancel).
+5. Cash-clearance happy path (the entire v1.1.4 surface).
+6. Cheque cancel → orphan Draft PE cleanup (after D2 fix lands).
+7. `cheque_batch._mark_cheques_deposited` error-handling test (after C3 fix lands).
+8. An install/uninstall smoke test (`bench install-app cheque_tracker` then `uninstall-app`) to verify migrations don't leave residue.
+
+---
