@@ -198,12 +198,11 @@ class Cheque(Document):
                     frappe.ValidationError,
                 )
 
-        # Reserve inside a savepoint scoped to the outer save() transaction.
-        # If a later step in before_save raises (e.g. _validate_outgoing_cheque_no),
-        # Frappe rolls back the outer transaction and the reservation goes with it.
+        # Run reservation as part of the outer save() transaction.
+        # If a later step in before_save raises, Frappe rolls back the
+        # outer transaction and the reservation goes with it.
         # reserve_leaf itself uses SELECT ... FOR UPDATE for concurrency.
-        with frappe.db.savepoint("reserve_leaf"):
-            result = reserve_leaf(self.cheque_book, self.name, frappe.session.user)
+        result = reserve_leaf(self.cheque_book, self.name, frappe.session.user)
 
         self.cheque_leaf = result["name"]
         self.cheque_no   = result["cheque_no"]

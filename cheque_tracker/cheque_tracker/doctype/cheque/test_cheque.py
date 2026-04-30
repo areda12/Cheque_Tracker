@@ -263,7 +263,10 @@ class TestCheque(FrappeTestCase):
         je.flags.ignore_permissions = True
         je.submit()
 
-        chq.reload()
+        # Fresh fetch by name — sidesteps reload() corner cases when the
+        # JE-submit hook has mutated the cheque via frappe.db.set_value
+        # while we still hold the in-memory doc.
+        chq = frappe.get_doc("Cheque", chq.name)
         self.assertEqual(chq.status, "Cleared")
         return chq, je
 
