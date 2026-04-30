@@ -97,6 +97,21 @@ def _get_receivable_account(company):
     return frappe.db.get_value("Company", company, "default_receivable_account")
 
 
+def _get_or_create_test_bank():
+    """Return a stable test Bank record name. Idempotent: creates the
+    record on first call, returns it on subsequent calls. Required because
+    v1.1.4 made drawee_bank mandatory for Incoming cheques, but the
+    surrounding test helpers were authored before that change."""
+    bank_name = "Test Bank - Cheque Tracker"
+    if frappe.db.exists("Bank", bank_name):
+        return bank_name
+    bank = frappe.new_doc("Bank")
+    bank.bank_name = bank_name
+    bank.flags.ignore_permissions = True
+    bank.insert()
+    return bank.name
+
+
 def _env():
     companies = frappe.get_all("Company", limit=1)
     if not companies:
@@ -121,6 +136,7 @@ def _make_incoming_cheque(company, customer, currency, pdc_account=None):
     chq.issue_date   = today()
     chq.cheque_no    = f"TEST-{frappe.generate_hash(length=6)}"
     chq.drawer_name  = "Test Drawer"
+    chq.drawee_bank  = _get_or_create_test_bank()
     if pdc_account:
         chq.pdc_account = pdc_account
     chq.flags.ignore_permissions = True

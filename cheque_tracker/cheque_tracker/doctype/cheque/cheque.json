@@ -324,7 +324,7 @@
    "options": "Payment Entry",
    "read_only": 1,
    "description": "Payment Entry that records receipt: Dr PDC Receivable, Cr AR.",
-   "allow_on_submit": 1
+   "allow_on_submit": 0
   },
   {
    "fieldname": "col_break_fin",
@@ -337,7 +337,7 @@
    "options": "Journal Entry",
    "read_only": 1,
    "description": "Journal Entry that clears the cheque: Dr Bank, Cr PDC Receivable.",
-   "allow_on_submit": 1
+   "allow_on_submit": 0
   },
   {
    "fieldname": "reversal_journal_entry",
@@ -346,7 +346,7 @@
    "options": "Journal Entry",
    "read_only": 1,
    "description": "Journal Entry used when cheque bounces (reverses the PDC recording).",
-   "allow_on_submit": 1
+   "allow_on_submit": 0
   },
   {
    "fieldname": "pre_bounce_status",
