@@ -28,6 +28,15 @@ def _get_or_create_pdc_account(company):
     """
     Return (or create) a simple asset account to act as the PDC Receivable account.
     We look for any existing asset account that we can reuse in tests.
+
+    NOTE: This helper deliberately creates the account with account_type=""
+    rather than "Receivable", matching the docstring's claim of a "simple
+    asset account". An account_type="Receivable" account requires `party` on
+    every GL entry that touches it, but make_recording_payment_entry does
+    not set `party` on the PDC-side GL row — so configuring the test PDC
+    account as Receivable would break pe.submit() with a GL Entry party
+    validation error. Test isolation here is intentional and separate from
+    how production PDC accounts may be configured.
     """
     # Try to find an existing test PDC account
     existing = frappe.get_all(
@@ -68,11 +77,15 @@ def _get_or_create_pdc_account(company):
     if not parent_options:
         return None
 
+    # NOTE: This deliberately uses account_type="" rather than "Receivable".
+    # Production PDC accounts may be configured as account_type="Receivable",
+    # in which case make_recording_payment_entry needs to set `party` on the
+    # PDC-side GL entry. Tracked as Phase 2 item — see PR comments.
     acc = frappe.new_doc("Account")
     acc.account_name    = "PDC Receivable - Test"
     acc.company         = company
     acc.parent_account  = parent_options[0].name
-    acc.account_type    = "Receivable"
+    acc.account_type    = ""
     acc.flags.ignore_permissions = True
     acc.insert()
     return acc.name
