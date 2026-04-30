@@ -630,4 +630,26 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 *Description:* All three resolvers used by Flow B raise actionable `frappe.throw` messages naming both the per-cheque field and the Settings field that could fix the error: `_get_pdc_account` ("PDC Receivable Account is not configured. Please set it in Cheque Tracker Settings or on the Cheque itself."), `_get_bank_gl_account` ("Bank GL Account could not be resolved. Set the Bank Account on the Cheque or configure Cheque Tracker Settings."), `_get_cash_gl_account` ("Cash GL Account could not be resolved. Set the Cash Account on the Cheque or configure Cheque Tracker Settings."). The JS layer also pre-flights `cash_account` / `bank_account` presence in `_make_clearance_je` (`cheque.js:455-470`) and shows an orange `frappe.msgprint` before any server round-trip — so misconfigured users see a friendly modal, not a stack trace.
 *Phase 2 recommendation:* No code change. The Settings-field-population decision from §3 is the only outstanding action; current messaging is compatible with either choice.
 
+**E5 — Transaction safety / rollback discipline**
+*Severity:* **P2**.
+*Description:* `make_clearance_journal_entry` does not contain the C1 anti-pattern — no `frappe.db.begin/commit/rollback` inside the body — so it inherits the request's outer transaction correctly. However, `je.insert()` (line 325) and `_set_cheque_fields(...)` (line 327) are not wrapped in a `frappe.db.savepoint`. Same fragility as Flow A D5: if the link write fails after the JE is inserted, the JE row exists but the back-link is missing; subsequent calls will not find the link and will create a duplicate JE.
+*Phase 2 recommendation:* Wrap lines 279-327 in a single `with frappe.db.savepoint("make_clearance_je"):` block and ensure no helper inside that block calls `frappe.db.commit()`. Apply the same pattern to `_update_clearance_je`.
+
+**E6 — `ignore_permissions = True` on JE creation**
+*Severity:* **P2**.
+*Description:* `je.flags.ignore_permissions = True` is set before `je.insert()` (line 324) and again in `_update_clearance_je` (line 352). The `_append_event_and_save` helper used by `_handle_clearance_je_submit` also sets `doc.flags.ignore_permissions = True` (`journal_entry_hooks.py:39`). Same trade-off as Flow A D6 — a Treasury User with Cheque write but no Journal Entry create rights can still create JEs through this path.
+*Phase 2 recommendation:* Add an explicit `frappe.has_permission("Journal Entry", "create", throw=True)` check at the top of `make_clearance_journal_entry` (and pair it with the equivalent for `process_bounce`, which also creates reversal JEs).
+
+**E7 — Multi-company / multi-currency assumptions**
+*Severity:* **P2** (informational for EEI's single-company / single-currency setup).
+*Description:* Two gaps:
+- The JE accounts rows omit `account_currency` and `exchange_rate`. With `cheque.currency != company.default_currency`, ERPNext core will treat `debit_in_account_currency` / `credit_in_account_currency` as company currency, so the GL will post the wrong amount. The local `currency` variable computed at line 306 is never written onto the rows.
+- `Cheque Tracker Settings.pdc_receivable_account` and `default_bank_gl_account` / `default_cash_account` are global (Settings is `issingle=1`); they have no company-scope check. Same gap as Flow A D7.
+*Phase 2 recommendation:* No change required for EEI's current scope. If multi-currency is ever in play, populate `account_currency` and `exchange_rate` on each JE row using `erpnext.setup.utils.get_exchange_rate(cheque.currency, company_currency, posting_date)`, and add a company-scope validation on each Settings account.
+
+**E8 — Cross-flow consistency and full-lifecycle GL drift**
+*Severity:* **P2**.
+*Description:* Per-flow accounting is symmetric: PE submit posts `Dr PDC, Cr AR` for `cheque.amount`; clearance JE submit posts `Dr Bank|Cash, Cr PDC` for the same amount; reversal JE (bounce path) posts `Dr AR, Cr PDC`. Net effect of issue → clear is `Dr Bank, Cr AR` (correct). Net effect of issue → bounce-after-submitted-PE is zero (PE + reversal JE cancel out). For the abuse path enabled by E2 (issue → clear → manually shift cheque status away from `Cleared` via `change_cheque_status` → re-click "Create Clearance Entry"): the idempotency guard on `cheque.clearance_journal_entry` correctly detects the submitted JE and emits a msgprint without inserting a second one, so under standard UI flow GL stays net-zero. **Drift only becomes possible if the `clearance_journal_entry` field is manually wiped** (e.g., via Set Value desk action or a script) — at that point the next click will insert a second `Dr Bank, Cr PDC`, leaving a phantom `-PDC` of `cheque.amount`. The E2 status hole therefore creates *state* divergence without *GL* divergence under normal use.
+*Phase 2 recommendation:* Fix E2 (block transitions away from `Cleared` unless the JE is cancelled) — that closes the data-integrity hole. Additionally, mark `clearance_journal_entry` / `recording_payment_entry` / `reversal_journal_entry` as `read_only: 1, allow_on_submit: 0` (or remove `allow_on_submit` — currently `1` per `cheque.json`) to prevent ad-hoc clearing of the link from the desk.
+
 ---
