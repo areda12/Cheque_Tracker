@@ -478,3 +478,45 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 
 ---
 
+## 5. PE/JE creation logic walkthrough
+
+### Flow A — Cheque issuance to Payment Entry
+
+#### Step-by-step trace
+
+1. User submits a Cheque doc with `cheque_type = "Incoming"`. Frappe core invokes `Cheque.on_submit` (`cheque.py:43-54`).
+2. `on_submit` for Incoming: if `self.status == "Draft"`, calls `frappe.db.set_value("Cheque", self.name, "status", "Received")` and updates `self.status` in memory.
+3. `on_submit` calls `self._append_event("Received", notes="Cheque submitted.")` then `self._flush_events()` (`cheque.py:53-54`).
+4. `_flush_events` (`cheque.py:321-336`) re-fetches the cheque via `frappe.get_doc`, appends the in-memory event row, sets `flags.ignore_permissions = True` and `flags.ignore_validate_update_after_submit = True`, then `persisted.save()`.
+5. **`on_submit` does not create a Payment Entry.** Control returns to the user; the cheque is now submitted with status `Received` and one new audit event.
+6. User opens the cheque form. `cheque.js` `_setup_buttons` (line 327) renders a **"Create Recording Payment Entry"** button under the *Accounting* group because `docstatus === 1`, `cheque_type === "Incoming"`, and `status` is in `["Received", "Draft"]` (`cheque.js:369-380`).
+7. User clicks the button. `_make_recording_pe` (`cheque.js:426`) fires `frappe.confirm`, then `frappe.call({ method: "...cheque_financial.make_recording_payment_entry", args: { cheque_name } })`.
+8. Server enters `make_recording_payment_entry` (`cheque_financial.py:142-236`). It calls `frappe.get_doc("Cheque", cheque_name)` then `frappe.has_permission("Cheque", "write", doc=cheque, throw=True)` (line 156).
+9. Validations (`cheque_financial.py:159-168`): cheque_type must be `Incoming`, party_type must be `Customer`, party must be set, company must be set, `flt(cheque.amount) > 0`. Each failure raises `frappe.throw`.
+10. Calls `_get_pdc_account(cheque)` (`cheque_financial.py:40-51`): returns `cheque.pdc_account` if set, else `Cheque Tracker Settings.pdc_receivable_account` via `frappe.get_cached_doc`, else `frappe.throw`.
+11. Calls `_get_receivable_account(cheque)` (`cheque_financial.py:54-66`): reads `Company.default_receivable_account` via `frappe.db.get_value`, else `frappe.throw`.
+12. Idempotency branch (`cheque_financial.py:174-188`) on `cheque.recording_payment_entry`: if linked PE has `docstatus == 0`, calls `_update_recording_pe(...)` (line 239) which mutates `paid_amount`, `received_amount`, `paid_from`, `paid_to`, `reference_no` and `pe.save()`s, then returns the existing PE name. If `docstatus == 1`, `frappe.msgprint` and return existing name. If `docstatus == 2` (cancelled), fall through to create a fresh PE.
+13. Construct new doc: `pe = frappe.new_doc("Payment Entry")` (line 191). Sets fields:
+    - `payment_type = "Receive"`
+    - `company = cheque.company`
+    - `posting_date = today()`
+    - `party_type = "Customer"`, `party = cheque.party`
+    - `paid_from = ar_account` (Company AR), `paid_to = pdc_account` (PDC Receivable)
+    - `paid_amount = received_amount = flt(cheque.amount)`
+    - `source_exchange_rate = target_exchange_rate = 1`
+    - `reference_no = cheque.cheque_no`, `reference_date = cheque.issue_date or today()`
+    - `remarks = "PDC Recording for Cheque {name} | Cheque No: {no} | Party: {party}"`
+    - `paid_from_account_currency = cheque.currency or company.default_currency`
+    - `paid_to_account_currency = company.default_currency`
+14. If `cheque.reference_doctype == "Sales Invoice"` and `cheque.reference_name` set (`cheque_financial.py:216-224`): reads the SI `outstanding_amount` via `frappe.db.get_value`, then `pe.append("references", { reference_doctype, reference_name, allocated_amount: min(cheque.amount, outstanding) })`.
+15. `pe.flags.ignore_permissions = True` (line 226), then `pe.insert()` — saves the PE as **Draft (`docstatus = 0`)**. The function never calls `pe.submit()`.
+16. `_set_cheque_fields(cheque_name, {"recording_payment_entry": pe.name})` (line 230) → `frappe.db.set_value("Cheque", cheque_name, {"recording_payment_entry": pe.name})`.
+17. `frappe.msgprint("Recording Payment Entry {0} created in Draft. Submit it to finalise.")`. Function returns `pe.name`.
+18. JS receives the name, reloads the cheque form, and prompts the user to open the PE.
+19. The user navigates to the Draft PE and clicks **Submit** (standard ERPNext flow). Frappe core runs ERPNext's standard PE validation and posts the GL entries (Dr `paid_to` = PDC Receivable, Cr `paid_from` = AR).
+20. As a side effect of PE submission, the `Payment Entry: on_submit` doc_event fires `cheque_tracker.cheque_tracker.hooks.payment_entry_hooks.payment_entry_on_submit` (`hooks.py:101`).
+21. Handler `_handle_recording_pe_submit` (`payment_entry_hooks.py:55-80`) runs `frappe.get_all("Cheque", filters={"recording_payment_entry": pe.name}, fields=["name", "status"], limit=1)`. If no row, returns. If found and `current_status in ("Draft", "Received")`, calls `frappe.db.set_value("Cheque", cheque_name, {"status": "Received"})`.
+22. `_append_event_and_save` (`payment_entry_hooks.py:31-43`) loads the cheque, appends a `Received` event with `reference_doctype="Payment Entry"`, `reference_name=pe.name`, sets both `ignore_permissions` and `ignore_validate_update_after_submit` flags, and saves.
+23. Flow ends. Final state: Cheque `docstatus=1`, `status="Received"`, `recording_payment_entry=PE-name`, audit table contains a `Received` event referencing the submitted PE. PE `docstatus=1` with GL entries posted by ERPNext core.
+
+---
