@@ -78,9 +78,46 @@ class Cheque(Document):
                     status="Voided",
                     void_reason=f"Cheque {self.name} cancelled.",
                 )
+
+        # D2: Clean up Draft accounting docs FIRST so that the subsequent
+        # _append_event_and_save (logging the Cancelled event) sees a clean
+        # cheque state. If we logged the event first then deleted the draft
+        # PE, we'd have an event row pointing at a now-deleted PE —
+        # recreating G2-style audit trail issues.
+        #
+        # Submitted (docstatus=1) PEs/JEs are not touched here — they have
+        # their own cancellation hooks in payment_entry_hooks /
+        # journal_entry_hooks, and they are also already blocked above by
+        # _has_submitted_accounting_docs(). Cancelled (docstatus=2) docs
+        # are no-ops.
+        self._delete_draft_if_any("Payment Entry", "recording_payment_entry")
+        self._delete_draft_if_any("Journal Entry", "clearance_journal_entry")
+        self._delete_draft_if_any("Journal Entry", "reversal_journal_entry")
+
         self._append_event("Cancelled", notes="Cheque cancelled.")
         frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
         self._flush_events()
+
+    def _delete_draft_if_any(self, doctype: str, fieldname: str):
+        """
+        If self has a linked accounting doc (PE or JE) and that doc is
+        still in Draft (docstatus=0), delete it and clear the back-link
+        on the cheque. Used by on_cancel to prevent orphan Draft PE/JE
+        from being submitted later against a cancelled cheque.
+        """
+        docname = self.get(fieldname)
+        if not docname:
+            return
+        docstatus = frappe.db.get_value(doctype, docname, "docstatus")
+        if docstatus != 0:
+            # Submitted: blocked above. Cancelled: nothing to clean.
+            return
+        frappe.delete_doc(
+            doctype, docname,
+            ignore_permissions=True,
+            force=True,
+        )
+        frappe.db.set_value("Cheque", self.name, fieldname, None)
 
     def on_update_after_submit(self):
         """

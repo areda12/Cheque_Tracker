@@ -360,6 +360,52 @@ class TestCheque(FrappeTestCase):
         )
 
     # ------------------------------------------------------------------ #
+    #  D2 regression — Cheque.on_cancel cleans up Draft accounting docs   #
+    # ------------------------------------------------------------------ #
+
+    def test_d2_cancel_cheque_cleans_up_draft_payment_entry(self):
+        """
+        D2: Cancelling a cheque must delete any Draft Payment Entry
+        linked to it, otherwise the orphan PE can be submitted later
+        against a cancelled cheque.
+        """
+        from cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial import (
+            make_recording_payment_entry,
+        )
+
+        co, ba, cu, cy = self._env()
+        pdc = _get_or_create_pdc_account(co)
+        bank_gl = _get_test_bank_gl_account(co)
+        if not pdc or not bank_gl:
+            self.skipTest("Missing PDC / Bank GL account in test environment.")
+        _configure_settings(co, pdc, bank_gl)
+
+        chq = _make_incoming_cheque(co, cu, cy, pdc)
+        chq = frappe.get_doc("Cheque", chq.name)
+
+        # Create a Draft recording PE (don't submit it)
+        pe_name = make_recording_payment_entry(chq.name)
+        pe_docstatus_before = frappe.db.get_value("Payment Entry", pe_name, "docstatus")
+        self.assertEqual(
+            pe_docstatus_before, 0,
+            "Test setup: PE should be Draft before cancel",
+        )
+
+        # make_recording_payment_entry mutated cheque.recording_payment_entry
+        # via db.set_value, so the in-memory chq has stale modified.
+        # Fresh-fetch before cancel to avoid TimestampMismatchError.
+        chq = frappe.get_doc("Cheque", chq.name)
+        chq.flags.ignore_permissions = True
+        chq.cancel()
+
+        # Assert: Draft PE no longer exists (was deleted, not just cancelled)
+        pe_exists = frappe.db.exists("Payment Entry", pe_name)
+        self.assertFalse(
+            pe_exists,
+            f"Draft Payment Entry {pe_name} should have been deleted on cheque cancel, but still exists.",
+        )
+
+    # ------------------------------------------------------------------ #
     #  F1 regressions — workflow-role gating on change_cheque_status      #
     # ------------------------------------------------------------------ #
 
