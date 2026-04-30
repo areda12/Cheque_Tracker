@@ -63,6 +63,13 @@
    "read": 1,
    "role": "Treasury User",
    "share": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Accounts User",
+   "share": 1
   }
  ],
  "sort_field": "modified",

@@ -496,3 +496,79 @@ class TestCheque(FrappeTestCase):
         # writes it back via db.set_value or when we attempt the transition.
         with self.assertRaises(Exception):
             change_cheque_status(chq.name, "InvalidStatus")
+
+    # ------------------------------------------------------------------ #
+    #  F2 regression — Settings read perm for Accounts User               #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_treasury_user(self):
+        """Return the email of a user that has ONLY Treasury User role
+        (Accounts User / System Manager / Administrator stripped).
+        Creates the user if missing. Mirror of _ensure_accounts_user."""
+        email = "test_f2_treasury_user@cheque-tracker.test"
+        if frappe.db.exists("User", email):
+            user = frappe.get_doc("User", email)
+        else:
+            user = frappe.new_doc("User")
+            user.email = email
+            user.first_name = "Test F2"
+            user.last_name = "Treasury"
+            user.enabled = 1
+            user.send_welcome_email = 0
+            user.flags.ignore_permissions = True
+            user.insert()
+
+        unwanted = {"Accounts User", "System Manager", "Administrator"}
+        user.roles = [r for r in user.roles if r.role not in unwanted]
+        if not any(r.role == "Treasury User" for r in user.roles):
+            user.append("roles", {"role": "Treasury User"})
+        user.flags.ignore_permissions = True
+        user.save()
+        return email
+
+    def test_f2_accounts_user_has_settings_read_permission(self):
+        """
+        F2 regression: Accounts User must have explicit read permission
+        on Cheque Tracker Settings. Required because:
+          - JE on_submit hook (which Accounts User triggers when
+            submitting the clearance JE) reads Settings.
+          - Server-side frappe.get_single bypasses perms by accident,
+            but explicit has_permission checks and UI access need this
+            entry.
+        """
+        if not frappe.db.exists("Role", "Accounts User"):
+            self.skipTest("Accounts User role not present on test site.")
+
+        accounts_user = self._ensure_accounts_user()
+        has_read = frappe.has_permission(
+            "Cheque Tracker Settings",
+            "read",
+            user=accounts_user,
+        )
+        self.assertTrue(
+            has_read,
+            f"Accounts User {accounts_user} must have read permission on "
+            "Cheque Tracker Settings (F2 fix). DocType JSON permissions "
+            "array missing Accounts User entry?",
+        )
+
+        # No regression: Treasury User still has read.
+        treasury_user = self._ensure_treasury_user()
+        self.assertTrue(
+            frappe.has_permission(
+                "Cheque Tracker Settings",
+                "read",
+                user=treasury_user,
+            ),
+            "Treasury User read permission regressed.",
+        )
+
+        # No regression: System Manager (Administrator) still has full access.
+        self.assertTrue(
+            frappe.has_permission(
+                "Cheque Tracker Settings",
+                "write",
+                user="Administrator",
+            ),
+            "System Manager (Administrator) write permission regressed.",
+        )
