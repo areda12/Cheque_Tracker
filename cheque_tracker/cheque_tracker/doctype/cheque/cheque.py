@@ -349,6 +349,20 @@ def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
 
 
 def _validate_transition(doc, new_status: str, notes: str):
+    # E2: bidirectional guard on Cleared. The forward direction (entering
+    # Cleared) is blocked further down — clearance must come from the JE
+    # submit hook. The reverse direction is blocked here so the cheque
+    # state cannot drift away from a still-submitted clearance JE.
+    if doc.status == "Cleared" and new_status != "Cleared":
+        frappe.throw(
+            _(
+                "Cheque is Cleared. Cancel the Clearance Journal Entry "
+                "to revert this status."
+            ),
+            frappe.ValidationError,
+            title=_("Cleared cheques cannot be transitioned manually"),
+        )
+
     if new_status in ("In Safe", "Deposited", "Presented"):
         if not doc.company or not doc.party or not doc.amount:
             frappe.throw(

@@ -6,8 +6,15 @@ from unittest.mock import patch
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
-from cheque_tracker.cheque_tracker.doctype.cheque.cheque import Cheque
+from cheque_tracker.cheque_tracker.doctype.cheque.cheque import Cheque, change_cheque_status
 from cheque_tracker.cheque_tracker.doctype.cheque_book.test_cheque_book import make_cheque_book
+from cheque_tracker.cheque_tracker.doctype.cheque.test_cheque_financial import (
+    _configure_settings,
+    _get_or_create_pdc_account,
+    _get_test_bank_gl_account,
+    _make_incoming_cheque,
+    _env as _financial_env,
+)
 
 
 def _env():
@@ -214,4 +221,104 @@ class TestCheque(FrappeTestCase):
         self.assertEqual(
             orphans, [],
             f"No leaf should retain a cheque link after rollback (found: {orphans}).",
+        )
+
+    # ------------------------------------------------------------------ #
+    #  E2 + E8 regressions — GL integrity hole                            #
+    # ------------------------------------------------------------------ #
+
+    def _build_cleared_cheque(self):
+        """
+        Helper: build a fully-cleared cheque (PE submitted + JE submitted).
+        Returns (cheque_doc, clearance_je_doc). Skips the test if the site
+        lacks the company / customer / accounts needed to run the financial
+        flow end-to-end.
+        """
+        company, customer, currency = _financial_env()
+        if not all([company, customer]):
+            self.skipTest("Missing company or customer in test environment.")
+
+        pdc = _get_or_create_pdc_account(company)
+        bank_gl = _get_test_bank_gl_account(company)
+        ar = frappe.db.get_value("Company", company, "default_receivable_account")
+        if not pdc or not bank_gl or not ar:
+            self.skipTest("Missing PDC / Bank GL / AR account in test environment.")
+
+        _configure_settings(company, pdc, bank_gl)
+
+        from cheque_tracker.cheque_tracker.doctype.cheque.cheque_financial import (
+            make_clearance_journal_entry,
+            make_recording_payment_entry,
+        )
+
+        chq = _make_incoming_cheque(company, customer, currency, pdc)
+
+        pe_name = make_recording_payment_entry(chq.name)
+        pe = frappe.get_doc("Payment Entry", pe_name)
+        pe.flags.ignore_permissions = True
+        pe.submit()
+
+        je_name = make_clearance_journal_entry(chq.name)
+        je = frappe.get_doc("Journal Entry", je_name)
+        je.flags.ignore_permissions = True
+        je.submit()
+
+        chq.reload()
+        self.assertEqual(chq.status, "Cleared")
+        return chq, je
+
+    def test_e2_blocks_transition_out_of_cleared(self):
+        """E2: change_cheque_status must reject any transition away from
+        Cleared while the clearance JE is still submitted."""
+        chq, _je = self._build_cleared_cheque()
+
+        with self.assertRaises(frappe.ValidationError):
+            change_cheque_status(chq.name, "Received")
+
+        # Status must remain Cleared in the DB (no partial state)
+        db_status = frappe.db.get_value("Cheque", chq.name, "status")
+        self.assertEqual(db_status, "Cleared")
+
+    def test_e2_allows_transition_back_to_cleared_after_je_cancel(self):
+        """E2: cancelling the clearance JE rolls cheque back to Received
+        via the on_cancel hook; subsequent transitions are no longer
+        blocked by the E2 guard."""
+        chq, je = self._build_cleared_cheque()
+
+        # Cancel the JE — triggers _handle_clearance_je_cancel, which
+        # sets cheque status back to Received and clears the link.
+        je.flags.ignore_permissions = True
+        je.cancel()
+
+        chq.reload()
+        self.assertEqual(chq.status, "Received")
+
+        # The E2 guard should no longer fire (doc.status != "Cleared").
+        result = change_cheque_status(chq.name, "In Safe")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            frappe.db.get_value("Cheque", chq.name, "status"),
+            "In Safe",
+        )
+
+    def test_e8_link_fields_locked_post_submit(self):
+        """E8: with allow_on_submit=0 on the three accounting link fields,
+        a doc.save() that mutates one of them must be rejected by Frappe's
+        update-after-submit guard. The PE/JE hooks bypass this via
+        frappe.db.set_value, so they remain functional."""
+        chq, _je = self._build_cleared_cheque()
+
+        fresh = frappe.get_doc("Cheque", chq.name)
+        original = fresh.recording_payment_entry
+        self.assertIsNotNone(original)
+
+        fresh.recording_payment_entry = "PE-FAKE-NONEXISTENT"
+        fresh.flags.ignore_permissions = True
+        with self.assertRaises(frappe.ValidationError):
+            fresh.save()
+
+        # DB value must be untouched
+        self.assertEqual(
+            frappe.db.get_value("Cheque", chq.name, "recording_payment_entry"),
+            original,
         )
