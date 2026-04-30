@@ -33,6 +33,19 @@ class ChequeBatch(Document):
         self.total_cheques = len(self.items)
 
     def _mark_cheques_deposited(self):
+        """
+        Transition each cheque in self.items to Deposited via
+        log_status_change. Failures are accumulated and surfaced to
+        the user via msgprint instead of being silently swallowed
+        (C3 fix). If every cheque fails, raise — no point in a
+        "successful" batch with zero effective work.
+
+        Cheques already in Deposited / Cleared / Cancelled are
+        skipped silently (not counted as failures): the batch is a
+        bulk action and a re-run on a partially-applied set should
+        be a no-op for the already-transitioned rows.
+        """
+        failed = []
         for row in self.items:
             try:
                 doc = frappe.get_doc("Cheque", row.cheque)
@@ -41,8 +54,41 @@ class ChequeBatch(Document):
                         "Deposited",
                         notes=f"Batch deposited via {self.name}.",
                     )
-            except Exception:
+            except Exception as e:
+                failed.append((row.cheque, str(e)[:300]))
                 frappe.log_error(
-                    frappe.get_traceback(),
-                    f"ChequeBatch: failed to mark {row.cheque} as Deposited",
+                    title=f"ChequeBatch: failed to mark {row.cheque} as Deposited",
+                    message=frappe.get_traceback(),
                 )
+
+        if not failed:
+            return
+
+        if len(failed) == len(self.items):
+            # All cheques failed — fail loudly rather than commit a
+            # zero-effective-work batch.
+            details = "<br/>".join(
+                f"• {name}: {err}" for name, err in failed
+            )
+            frappe.throw(
+                _("All {0} cheques failed to transition to Deposited:<br/>{1}").format(
+                    len(self.items), details
+                ),
+                title=_("Batch Deposit Failed"),
+            )
+
+        # Partial failure — let the successful transitions commit,
+        # but show the user exactly which ones to fix.
+        details = "<br/>".join(
+            f"• {name}: {err}" for name, err in failed
+        )
+        frappe.msgprint(
+            _(
+                "<b>{0} of {1} cheques failed to transition to Deposited:</b>"
+                "<br/>{2}<br/><br/>"
+                "The remaining cheques were marked Deposited successfully. "
+                "Fix the failed cheques individually."
+            ).format(len(failed), len(self.items), details),
+            title=_("Partial Batch Deposit"),
+            indicator="orange",
+        )
