@@ -1,25 +1,122 @@
 [
-  {
-    "doctype": "Workspace",
-    "name": "Treasury Workbench",
-    "title": "Treasury Workbench",
-    "label": "Treasury Workbench",
-    "type": "Module",
-    "category": "Modules",
-    "module": "Cheque Tracker",
-    "icon": "octicon octicon-credit-card",
-    "is_standard": 1,
-    "public": 1,
-    "content": "[{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Leaf\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Batch\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheques Due This Week\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Deposited Not Cleared\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bounced Cheques Register\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cheque Book Utilization\",\"col\":3}}]",
-    "shortcuts": [
-      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque",                   "link_to": "Cheque"},
-      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Book",              "link_to": "Cheque Book"},
-      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Leaf",              "link_to": "Cheque Leaf"},
-      {"doctype": "Workspace Shortcut", "type": "DocType", "label": "Cheque Batch",             "link_to": "Cheque Batch"},
-      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Cheques Due This Week",    "link_to": "Cheques Due This Week"},
-      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Deposited Not Cleared",    "link_to": "Deposited Not Cleared"},
-      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Bounced Cheques Register", "link_to": "Bounced Cheques Register"},
-      {"doctype": "Workspace Shortcut", "type": "Report",  "label": "Cheque Book Utilization",  "link_to": "Cheque Book Utilization"}
-    ]
-  }
+ {
+  "doctype": "Workspace",
+  "name": "Cheque Tracker",
+  "label": "Cheque Tracker",
+  "title": "Cheque Tracker",
+  "public": 1,
+  "is_hidden": 0,
+  "for_user": "",
+  "parent_page": "",
+  "sequence_id": 6.5,
+  "icon": "money",
+  "indicator_color": "green",
+  "module": "Accounts",
+  "type": "Workspace",
+  "app": "cheque_tracker",
+  "hide_custom": 0,
+  "restrict_to_domain": "",
+  "content": "[{\"id\":\"header_cheques\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Cheques</b></span>\",\"col\":12}},{\"id\":\"card_cheques\",\"type\":\"card\",\"data\":{\"card_name\":\"Cheques\",\"col\":4}},{\"id\":\"card_books\",\"type\":\"card\",\"data\":{\"card_name\":\"Cheque Books\",\"col\":4}},{\"id\":\"card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings\",\"col\":4}},{\"id\":\"header_reports\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Reports</b></span>\",\"col\":12}},{\"id\":\"card_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":12}}]",
+  "shortcuts": [
+   {
+    "type": "DocType",
+    "label": "Cheque",
+    "link_to": "Cheque",
+    "color": "Blue",
+    "stats_filter": "{\"docstatus\":1}"
+   },
+   {
+    "type": "DocType",
+    "label": "Cheque Book",
+    "link_to": "Cheque Book",
+    "color": "Green"
+   },
+   {
+    "type": "DocType",
+    "label": "Settings",
+    "link_to": "Cheque Tracker Settings",
+    "color": "Grey"
+   }
+  ],
+  "links": [
+   {
+    "type": "Card Break",
+    "label": "Cheques",
+    "link_count": 2
+   },
+   {
+    "type": "Link",
+    "label": "Cheque",
+    "link_type": "DocType",
+    "link_to": "Cheque"
+   },
+   {
+    "type": "Link",
+    "label": "Cheque Batch",
+    "link_type": "DocType",
+    "link_to": "Cheque Batch"
+   },
+   {
+    "type": "Card Break",
+    "label": "Cheque Books",
+    "link_count": 2
+   },
+   {
+    "type": "Link",
+    "label": "Cheque Book",
+    "link_type": "DocType",
+    "link_to": "Cheque Book"
+   },
+   {
+    "type": "Link",
+    "label": "Cheque Leaf",
+    "link_type": "DocType",
+    "link_to": "Cheque Leaf"
+   },
+   {
+    "type": "Card Break",
+    "label": "Settings",
+    "link_count": 1
+   },
+   {
+    "type": "Link",
+    "label": "Cheque Tracker Settings",
+    "link_type": "DocType",
+    "link_to": "Cheque Tracker Settings"
+   },
+   {
+    "type": "Card Break",
+    "label": "Reports",
+    "link_count": 4
+   },
+   {
+    "type": "Link",
+    "label": "Cheque Book Utilization",
+    "link_type": "Report",
+    "link_to": "Cheque Book Utilization",
+    "is_query_report": 1
+   },
+   {
+    "type": "Link",
+    "label": "Deposited Not Cleared",
+    "link_type": "Report",
+    "link_to": "Deposited Not Cleared",
+    "is_query_report": 1
+   },
+   {
+    "type": "Link",
+    "label": "Bounced Cheques Register",
+    "link_type": "Report",
+    "link_to": "Bounced Cheques Register",
+    "is_query_report": 1
+   },
+   {
+    "type": "Link",
+    "label": "Cheques Due This Week",
+    "link_type": "Report",
+    "link_to": "Cheques Due This Week",
+    "is_query_report": 1
+   }
+  ]
+ }
 ]

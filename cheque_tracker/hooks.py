@@ -49,7 +49,7 @@ fixtures = [
     },
     {
         "dt": "Workspace",
-        "filters": [["name", "=", "Treasury Workbench"]],
+        "filters": [["name", "=", "Cheque Tracker"]],
     },
     {
         "dt": "Report",
