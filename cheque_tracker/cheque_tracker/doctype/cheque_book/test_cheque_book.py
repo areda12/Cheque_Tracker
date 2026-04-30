@@ -4,6 +4,10 @@
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book import (
+    get_book_counters,
+)
+
 
 # ------------------------------------------------------------------ #
 #  Shared factory                                                      #
@@ -134,3 +138,85 @@ class TestChequeBook(FrappeTestCase):
             filters={"cheque_book": cb.name, "leaf_status": "Cancelled"},
         )
         self.assertEqual(len(cancelled), 6)
+
+    # ------------------------------------------------------------------ #
+    #  C2 regression — write-perm check on get_book_counters              #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_role_only_user(self, email_prefix, first_name, role):
+        """
+        Idempotently provision a test user with ONLY the given role
+        (Treasury / Accounts / Cheque Auditor / System Manager /
+        Administrator stripped if previously present). Local helper
+        — parallel to the F1/F2 helpers in test_cheque.py; duplicated
+        here so test_cheque_book.py remains self-contained.
+        """
+        email = f"{email_prefix}@cheque-tracker.test"
+        if frappe.db.exists("User", email):
+            user = frappe.get_doc("User", email)
+        else:
+            user = frappe.new_doc("User")
+            user.email = email
+            user.first_name = first_name
+            user.last_name = "Test"
+            user.enabled = 1
+            user.send_welcome_email = 0
+            user.flags.ignore_permissions = True
+            user.insert()
+
+        unwanted = {
+            "Treasury User", "Accounts User", "Cheque Auditor",
+            "System Manager", "Administrator",
+        } - {role}
+        user.roles = [r for r in user.roles if r.role not in unwanted]
+        if not any(r.role == role for r in user.roles):
+            user.append("roles", {"role": role})
+        user.flags.ignore_permissions = True
+        user.save()
+        return email
+
+    def test_c2_get_book_counters_allowed_for_treasury_user(self):
+        """C2: Treasury User has write perm on Cheque Book, so the
+        endpoint runs and returns the counters dict."""
+        if not frappe.db.exists("Role", "Treasury User"):
+            self.skipTest("Treasury User role not present on test site.")
+
+        treasury = self._ensure_role_only_user(
+            "test_c2_treasury_user", "Test C2 Treasury", "Treasury User",
+        )
+        cb = make_cheque_book(8100, 8110)
+        cb.submit()
+
+        original_user = frappe.session.user
+        try:
+            frappe.set_user(treasury)
+            result = get_book_counters(cb.name)
+        finally:
+            frappe.set_user(original_user)
+
+        self.assertIsInstance(result, dict)
+        for k in ("unused_leaves", "issued_leaves", "voided_leaves", "cancelled_leaves"):
+            self.assertIn(k, result)
+
+    def test_c2_get_book_counters_blocked_for_read_only_role(self):
+        """
+        C2: get_book_counters writes via db_set inside _refresh_counters.
+        Users with only read permission must be blocked from triggering
+        the write side-effect.
+        """
+        if not frappe.db.exists("Role", "Cheque Auditor"):
+            self.skipTest("Cheque Auditor role not present on test site.")
+
+        auditor = self._ensure_role_only_user(
+            "test_c2_cheque_auditor", "Test C2 Auditor", "Cheque Auditor",
+        )
+        cb = make_cheque_book(8000, 8010)
+        cb.submit()
+
+        original_user = frappe.session.user
+        try:
+            frappe.set_user(auditor)
+            with self.assertRaises(frappe.PermissionError):
+                get_book_counters(cb.name)
+        finally:
+            frappe.set_user(original_user)
