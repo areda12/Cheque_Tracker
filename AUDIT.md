@@ -760,3 +760,61 @@ In priority order:
 8. An install/uninstall smoke test (`bench install-app cheque_tracker` then `uninstall-app`) to verify migrations don't leave residue.
 
 ---
+
+## 7. Permissions sanity check
+
+> Note: the prompt mentions a "Cheque Print Template" DocType — that DocType does **not** exist in this repo. The seven actual DocTypes are listed below. Flagging in case it was supposed to be added in v1.1.4 and was missed.
+
+### Part A — DocType permissions vs. code enforcement
+
+| DocType                     | Roles in JSON (rights summary)                                                                                                                                                | Code enforcement                                                                                                                          | Match? / Concerns                                                                                                                                                                                                                                                                       |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Cheque**                  | Treasury User: full (r/w/create/delete/submit/cancel). Accounts User: r/w/email/export/print/share/report. Cheque Auditor: read/print/export/report.                          | Whitelisted methods all check `has_permission("Cheque", "write")`. Workflow transitions are encoded in `Cheque Workflow` fixture roles.    | ⚠️ **P1 — workflow bypass.** `change_cheque_status` only checks `Cheque write`. Since Accounts User has Cheque `write`, they can drive any non-Cleared/non-Cancelled transition (e.g., `Deposited`, `Bounced`) — bypassing the workflow's role gates that restrict those to Treasury User. |
+| **Cheque Book**             | Treasury User: full. System Manager: r/w/submit/cancel. Accounts User: read/print/export/report. Cheque Auditor: read/print/export/report.                                    | `ChequeBook` class methods enforce business rules. `get_book_counters` whitelist has **no** `has_permission` check (cross-ref C2 / §4.5). | ⚠️ **P2** — `get_book_counters` is callable by any authenticated user; data is benign (leaf counters) but not gated.                                                                                                                                                                  |
+| **Cheque Leaf**             | Treasury User: read/print/email/export/share/report. Accounts User: read. Cheque Auditor: read. System Manager: create/read/write/delete.                                     | All mutations go through `ignore_permissions=True` or raw `db.sql` (leaf gen, reserve, release, mark issued, cancel unused).               | ✅ Match. Treasury User has no JSON write — and code paths that mutate leaves all run on behalf of a permitted Cheque/Cheque Book action, with `ignore_permissions=True`. Standard pattern.                                                                                            |
+| **Cheque Batch**            | Treasury User: full. Accounts User: read. Cheque Auditor: read.                                                                                                                | `_mark_cheques_deposited` calls `Cheque.log_status_change` (requires Cheque write — Treasury User has it).                                 | ✅ Match.                                                                                                                                                                                                                                                                              |
+| **Cheque Event** (child)    | No permissions in JSON → inherits from parent (Cheque).                                                                                                                        | Mutations via `ignore_permissions=True` from PE/JE hooks and `_flush_events`.                                                              | ✅ Standard child-table semantics.                                                                                                                                                                                                                                                     |
+| **Cheque Batch Item** (child) | No permissions in JSON → inherits from parent (Cheque Batch).                                                                                                                  | Read-only via `fetch_from`.                                                                                                                | ✅ Match.                                                                                                                                                                                                                                                                              |
+| **Cheque Tracker Settings** | System Manager: create/read/write/print/email/share. Treasury User: read/print/email/share.                                                                                    | `cheque_financial.py` reads via `frappe.get_cached_doc` from PE/JE entry-points (which are callable by Accounts User per Cheque write).    | ⚠️ **P2 latent** — Accounts User has Cheque write but **no** Cheque Tracker Settings read. Calling `make_recording_payment_entry` will likely fail when `_get_pdc_account` loads Settings, depending on cache state. Either add Accounts User to Settings read perms, or document that PE/JE creation is Treasury-only. |
+
+#### Read-but-shouldn't / write-but-shouldn't summary
+
+- **Accounts User reading unposted (Draft) Cheques:** allowed by Cheque JSON (`read=1`) and by core docstatus filtering. Acceptable for a treasury workflow where Accounts staff need visibility before clearance. ✅
+- **Accounts User writing Cheque:** allowed (`write=1` in JSON). Combined with the lack of role gates in `change_cheque_status`, this enables the workflow bypass flagged above. ⚠️ **P1**.
+- **Cheque Auditor:** read-only across the board, both in JSON and (implicitly) in code. ✅
+- **System Manager:** has full access on Cheque Book and Settings; not listed on Cheque itself, but inherits via standard core Frappe behavior. ✅
+
+### Part B — Whitelisted methods inventory
+
+| # | File:line                                                          | Function                                | Purpose                                                                                                | Guard                                                                | Severity if missing |
+|---|--------------------------------------------------------------------|-----------------------------------------|--------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|---------------------|
+| 1 | `cheque/cheque.py:343`                                             | `change_cheque_status`                  | Workflow / status transition (non-financial).                                                          | ✅ `frappe.has_permission("Cheque", "write", doc=doc, throw=True)`   | P0 (status drives downstream finance)  |
+| 2 | `cheque/cheque.py:399`                                             | `hand_over_cheque`                      | Transfer custody and log a Handed Over event.                                                          | ✅ `frappe.has_permission("Cheque", "write", doc=doc, throw=True)`   | P1 (custody trail)  |
+| 3 | `cheque/cheque_financial.py:142`                                   | `make_recording_payment_entry`          | Create Draft Recording PE for an Incoming cheque.                                                      | ✅ `frappe.has_permission("Cheque", "write", doc=cheque, throw=True)` | **P0**              |
+| 4 | `cheque/cheque_financial.py:255`                                   | `make_clearance_journal_entry`          | Create Draft Clearance JE.                                                                              | ✅ `frappe.has_permission("Cheque", "write", doc=cheque, throw=True)` | **P0**              |
+| 5 | `cheque/cheque_financial.py:360`                                   | `process_bounce`                        | Cancel Draft PE or create Draft reversal JE.                                                            | ✅ `frappe.has_permission("Cheque", "write", doc=cheque, throw=True)` | **P0**              |
+| 6 | `cheque_book/cheque_book.py:169`                                   | `get_book_counters`                     | Read leaf counters for any Cheque Book by name.                                                         | ❌ **none**                                                          | **P2** (read-only, benign data) |
+
+#### Cross-reference with C2
+
+C2 in §4.5 listed `get_book_counters` as the only whitelisted method missing a permission guard. Confirmed: **C2 is still the sole unguarded whitelisted method.** The other five all use `frappe.has_permission("Cheque", "write")`.
+
+C2 was rated **P1** in §4.5 under the general "missing-guard" framework, and **P2** here under the §7 framework (read-only, benign data). The two ratings are not contradictory — the §4 framework treats *any* missing guard as P1 by default; §7's stricter classification reflects that the data exposed is leaf counters, not finance state. Proposed fix is unchanged: add `frappe.has_permission("Cheque Book", "read", doc=cheque_book, throw=True)` at the top of the function.
+
+#### New Phase 2 finding from §7
+
+**F1 (P1)** — Workflow role bypass via `change_cheque_status`. Accounts User has `Cheque write` per JSON, so they can drive transitions that the workflow restricts to Treasury User (e.g., `Deposit`, `Bounce`). Recommend adding role checks inside `_validate_transition`, e.g.:
+
+```python
+ROLE_BY_TRANSITION = {
+    ("In Safe", "Deposited"): {"Treasury User", "System Manager"},
+    ("Received", "Deposited"): {"Treasury User", "System Manager"},
+    ...
+}
+```
+
+or simply call `frappe.only_for(["Treasury User", "System Manager"])` for the Treasury-restricted transitions and `frappe.only_for(["Accounts User", "System Manager"])` for the Accounts-restricted ones (mirroring the Workflow's `allowed` field).
+
+**F2 (P2 latent)** — Accounts User cannot read `Cheque Tracker Settings` per JSON, but has Cheque write so can call `make_recording_payment_entry` / `make_clearance_journal_entry`, which load Settings via `frappe.get_cached_doc`. Behavior depends on cache state. Either grant Accounts User read on Settings, or restrict the PE/JE entry points to Treasury User explicitly.
+
+---
