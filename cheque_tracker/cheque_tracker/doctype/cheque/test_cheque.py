@@ -322,3 +322,92 @@ class TestCheque(FrappeTestCase):
             frappe.db.get_value("Cheque", chq.name, "recording_payment_entry"),
             original,
         )
+
+    # ------------------------------------------------------------------ #
+    #  F1 regressions — workflow-role gating on change_cheque_status      #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_accounts_user(self):
+        """Return the email of a user that has ONLY Accounts User role
+        (Treasury User / System Manager / Administrator stripped).
+        Creates the user if missing."""
+        email = "test_f1_accounts_user@cheque-tracker.test"
+        if frappe.db.exists("User", email):
+            user = frappe.get_doc("User", email)
+        else:
+            user = frappe.new_doc("User")
+            user.email = email
+            user.first_name = "Test F1"
+            user.last_name = "Accounts"
+            user.enabled = 1
+            user.send_welcome_email = 0
+            user.flags.ignore_permissions = True
+            user.insert()
+
+        # Strip elevated roles, ensure Accounts User present
+        unwanted = {"Treasury User", "System Manager", "Administrator"}
+        user.roles = [r for r in user.roles if r.role not in unwanted]
+        if not any(r.role == "Accounts User" for r in user.roles):
+            user.append("roles", {"role": "Accounts User"})
+        user.flags.ignore_permissions = True
+        user.save()
+        return email
+
+    def _make_outgoing_for_f1(self):
+        """Build a submitted Outgoing cheque (status stays 'Draft' after
+        submit per current on_submit logic — that's the from-state we
+        test transitions against). Returns the cheque doc."""
+        co, ba, cu, cy = self._env()
+        cb = make_cheque_book(8500, 8510, company=co, bank_account=ba)
+        cb.submit()
+        chq = _outgoing(cb, co, cu, cy)
+        chq.submit()
+        chq.reload()
+        return chq
+
+    def test_f1_accounts_user_blocked_from_treasury_only_transition(self):
+        """F1: Accounts User must be blocked from a Treasury-only
+        transition (Draft → Received per workflow)."""
+        if not frappe.db.exists("Role", "Accounts User"):
+            self.skipTest("Accounts User role not present on test site.")
+
+        chq = self._make_outgoing_for_f1()
+        before_status = frappe.db.get_value("Cheque", chq.name, "status")
+
+        accounts_email = self._ensure_accounts_user()
+        try:
+            frappe.set_user(accounts_email)
+            with self.assertRaises(frappe.PermissionError):
+                change_cheque_status(chq.name, "Received")
+        finally:
+            frappe.set_user("Administrator")
+
+        # DB status must be unchanged after the blocked call.
+        after_status = frappe.db.get_value("Cheque", chq.name, "status")
+        self.assertEqual(after_status, before_status)
+
+    def test_f1_treasury_user_allowed_for_treasury_transition(self):
+        """F1: Administrator (System Manager) must be allowed to drive
+        a Treasury-only transition (Draft → Received)."""
+        chq = self._make_outgoing_for_f1()
+
+        # Running as Administrator (the test default) — has System Manager.
+        result = change_cheque_status(chq.name, "Received")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            frappe.db.get_value("Cheque", chq.name, "status"),
+            "Received",
+        )
+
+    def test_f1_unknown_transition_falls_through(self):
+        """F1: pairs (from_status, to_status) not in _TRANSITION_ROLES
+        must fall through. The Select field on Cheque.status constrains
+        the allowed values, so an unknown new_status is rejected by
+        Frappe's core validation rather than slipping through silently."""
+        chq = self._make_outgoing_for_f1()
+
+        # "InvalidStatus" is not in the Cheque.status Select options →
+        # Frappe will raise (ValidationError or similar) when log_status_change
+        # writes it back via db.set_value or when we attempt the transition.
+        with self.assertRaises(Exception):
+            change_cheque_status(chq.name, "InvalidStatus")

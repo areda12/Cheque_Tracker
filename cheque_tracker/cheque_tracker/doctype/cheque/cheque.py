@@ -338,6 +338,31 @@ class Cheque(Document):
 #  Whitelisted API                                                     #
 # ------------------------------------------------------------------ #
 
+# F1: workflow-role gating for change_cheque_status. Mirrors
+# Cheque Workflow.transitions[].allowed in fixtures/workflow.json,
+# with System Manager always permitted. Pairs (from_status, to_status)
+# not present here fall through to the per-status validation logic
+# in _validate_transition (or to the Select-field constraint).
+_TRANSITION_ROLES = {
+    # (from_status, to_status): allowed roles
+    ("Draft", "Received"):      {"Treasury User", "System Manager"},
+    ("Received", "In Safe"):    {"Treasury User", "System Manager"},
+    ("Received", "Deposited"):  {"Treasury User", "System Manager"},
+    ("Received", "Returned"):   {"Treasury User", "System Manager"},
+    ("Received", "Cancelled"):  {"Treasury User", "System Manager"},
+    ("In Safe", "Deposited"):   {"Treasury User", "System Manager"},
+    ("In Safe", "Returned"):    {"Treasury User", "System Manager"},
+    ("In Safe", "Cancelled"):   {"Treasury User", "System Manager"},
+    ("Deposited", "Presented"): {"Treasury User", "System Manager"},
+    # Dead-letter rows (blocked by E2 + JE-submit gating, listed for completeness):
+    ("Deposited", "Cleared"):   {"Accounts User", "System Manager"},
+    ("Deposited", "Bounced"):   {"Treasury User", "System Manager"},
+    ("Presented", "Cleared"):   {"Accounts User", "System Manager"},
+    ("Presented", "Bounced"):   {"Treasury User", "System Manager"},
+    ("Bounced", "Replaced"):    {"Treasury User", "System Manager"},
+}
+
+
 @frappe.whitelist()
 def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
     """Workflow / UI transition endpoint (non-financial status changes)."""
@@ -362,6 +387,25 @@ def _validate_transition(doc, new_status: str, notes: str):
             frappe.ValidationError,
             title=_("Cleared cheques cannot be transitioned manually"),
         )
+
+    # F1: gate the transition by workflow role. Mirrors
+    # Cheque Workflow.transitions[].allowed (fixtures/workflow.json) plus
+    # System Manager always allowed. Unknown transitions fall through to
+    # the per-status logic / Select-field validation below.
+    allowed_roles = _TRANSITION_ROLES.get((doc.status, new_status))
+    if allowed_roles is not None:
+        user_roles = set(frappe.get_roles(frappe.session.user))
+        if not (user_roles & allowed_roles):
+            frappe.throw(
+                _(
+                    "You do not have permission to transition this cheque "
+                    "from {0} to {1}. Allowed roles: {2}."
+                ).format(
+                    doc.status, new_status, ", ".join(sorted(allowed_roles))
+                ),
+                frappe.PermissionError,
+                title=_("Insufficient role for cheque transition"),
+            )
 
     if new_status in ("In Safe", "Deposited", "Presented"):
         if not doc.company or not doc.party or not doc.amount:
