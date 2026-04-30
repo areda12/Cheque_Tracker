@@ -68,9 +68,9 @@
   },
   {
    "fieldname": "reference_name",
-   "fieldtype": "Dynamic Link",
+   "fieldtype": "Data",
    "label": "Reference Name",
-   "options": "reference_doctype"
+   "options": ""
   },
   {
    "fieldname": "col_break_ref",

@@ -43,6 +43,9 @@ def _outgoing(cb, company, customer, currency):
     chq.cheque_no    = "PLACEHOLDER"  # overwritten by before_save
     chq.flags.ignore_permissions = True
     chq.insert()
+    # Fresh fetch — after_insert hook appends a "Created" event and bumps
+    # modified, so the in-memory doc is stale for any caller that submits.
+    chq = frappe.get_doc("Cheque", chq.name)
     return chq
 
 
@@ -166,43 +169,48 @@ class TestCheque(FrappeTestCase):
         committing the outer save() transaction. A later raise in before_save
         could not roll the leaf back, leaving an orphan Reserved leaf.
 
-        With the savepoint fix, the leaf reservation is part of the outer
-        transaction; any later raise causes the entire save() to roll back,
-        returning the leaf to Unused.
+        With the fix (the explicit commit removed), the leaf reservation
+        runs inside the outer save() transaction. Production request handlers
+        always rollback on exception; this test simulates that discipline by
+        wrapping the failing insert in a savepoint and rolling it back before
+        asserting on leaf state.
         """
         co, ba, cu, cy = self._env()
         cb = make_cheque_book(7800, 7810, company=co, bank_account=ba)
         cb.submit()
 
-        # Sanity: no Reserved leaves yet, all 11 are Unused.
         reserved_before = frappe.get_all(
             "Cheque Leaf",
             filters={"cheque_book": cb.name, "leaf_status": "Reserved"},
         )
         self.assertEqual(len(reserved_before), 0)
 
-        # Patch _validate_outgoing_cheque_no (runs AFTER reservation in
-        # before_save) to raise — simulating a post-reservation failure.
-        with patch.object(
-            Cheque,
-            "_validate_outgoing_cheque_no",
-            side_effect=frappe.ValidationError("simulated post-reservation failure"),
-        ):
-            chq = frappe.new_doc("Cheque")
-            chq.cheque_type = "Outgoing"
-            chq.company = co
-            chq.party_type = "Customer"
-            chq.party = cu
-            chq.amount = 1000
-            chq.currency = cy
-            chq.due_date = frappe.utils.add_days(frappe.utils.today(), 30)
-            chq.cheque_book = cb.name
-            chq.cheque_no = "PLACEHOLDER"
-            chq.flags.ignore_permissions = True
-            with self.assertRaises(frappe.ValidationError):
-                chq.insert()
+        # Simulate the rollback discipline of a production request handler:
+        # any exception during save() is followed by a transaction rollback.
+        sp = "test_c1_rollback"
+        frappe.db.savepoint(sp)
+        try:
+            with patch.object(
+                Cheque,
+                "_validate_outgoing_cheque_no",
+                side_effect=frappe.ValidationError("simulated post-reservation failure"),
+            ):
+                chq = frappe.new_doc("Cheque")
+                chq.cheque_type = "Outgoing"
+                chq.company = co
+                chq.party_type = "Customer"
+                chq.party = cu
+                chq.amount = 1000
+                chq.currency = cy
+                chq.due_date = frappe.utils.add_days(frappe.utils.today(), 30)
+                chq.cheque_book = cb.name
+                chq.cheque_no = "PLACEHOLDER"
+                chq.flags.ignore_permissions = True
+                with self.assertRaises(frappe.ValidationError):
+                    chq.insert()
+        finally:
+            frappe.db.rollback(save_point=sp)
 
-        # After rollback: no Reserved leaves should remain in the book.
         reserved_after = frappe.get_all(
             "Cheque Leaf",
             filters={"cheque_book": cb.name, "leaf_status": "Reserved"},
@@ -211,8 +219,6 @@ class TestCheque(FrappeTestCase):
             len(reserved_after), 0,
             "Leaf reservation must be rolled back when a later validation fails.",
         )
-
-        # No orphan: no leaf in the book should still hold a `cheque` link.
         orphans = frappe.get_all(
             "Cheque Leaf",
             filters={"cheque_book": cb.name, "cheque": ["is", "set"]},
@@ -263,9 +269,39 @@ class TestCheque(FrappeTestCase):
         je.flags.ignore_permissions = True
         je.submit()
 
-        chq.reload()
+        # Fresh fetch by name — sidesteps reload() corner cases when the
+        # JE-submit hook has mutated the cheque via frappe.db.set_value
+        # while we still hold the in-memory doc.
+        chq = frappe.get_doc("Cheque", chq.name)
         self.assertEqual(chq.status, "Cleared")
         return chq, je
+
+    def _make_received_for_f1(self):
+        """
+        Create an Incoming cheque submitted to Received status, for F1
+        role-gate tests. Incoming cheques auto-transition Draft → Received
+        on submit (via Cheque.on_submit hook), giving a known starting
+        state for testing Received → In Safe (a Treasury-only transition
+        per F1 mapping).
+        """
+        company, customer, currency = _financial_env()
+        if not all([company, customer]):
+            self.skipTest("Missing company or customer in test environment.")
+
+        pdc = _get_or_create_pdc_account(company)
+        bank_gl = _get_test_bank_gl_account(company)
+        if not pdc or not bank_gl:
+            self.skipTest("Missing PDC / Bank GL account in test environment.")
+
+        _configure_settings(company, pdc, bank_gl)
+
+        chq = _make_incoming_cheque(company, customer, currency, pdc)
+        chq = frappe.get_doc("Cheque", chq.name)  # fresh fetch
+        self.assertEqual(
+            chq.status, "Received",
+            f"Expected Incoming cheque to be in Received status after submit, got {chq.status!r}",
+        )
+        return chq
 
     def test_e2_blocks_transition_out_of_cleared(self):
         """E2: change_cheque_status must reject any transition away from
@@ -367,18 +403,19 @@ class TestCheque(FrappeTestCase):
 
     def test_f1_accounts_user_blocked_from_treasury_only_transition(self):
         """F1: Accounts User must be blocked from a Treasury-only
-        transition (Draft → Received per workflow)."""
+        transition. Uses Received → In Safe — a row that exists in
+        _TRANSITION_ROLES with allowed roles {Treasury User, System Manager}."""
         if not frappe.db.exists("Role", "Accounts User"):
             self.skipTest("Accounts User role not present on test site.")
 
-        chq = self._make_outgoing_for_f1()
+        chq = self._make_received_for_f1()
         before_status = frappe.db.get_value("Cheque", chq.name, "status")
 
         accounts_email = self._ensure_accounts_user()
         try:
             frappe.set_user(accounts_email)
             with self.assertRaises(frappe.PermissionError):
-                change_cheque_status(chq.name, "Received")
+                change_cheque_status(chq.name, "In Safe")
         finally:
             frappe.set_user("Administrator")
 
@@ -388,15 +425,17 @@ class TestCheque(FrappeTestCase):
 
     def test_f1_treasury_user_allowed_for_treasury_transition(self):
         """F1: Administrator (System Manager) must be allowed to drive
-        a Treasury-only transition (Draft → Received)."""
-        chq = self._make_outgoing_for_f1()
+        a Treasury-only transition. Uses Received → In Safe — a row that
+        exists in _TRANSITION_ROLES with allowed roles
+        {Treasury User, System Manager}."""
+        chq = self._make_received_for_f1()
 
         # Running as Administrator (the test default) — has System Manager.
-        result = change_cheque_status(chq.name, "Received")
+        result = change_cheque_status(chq.name, "In Safe")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(
             frappe.db.get_value("Cheque", chq.name, "status"),
-            "Received",
+            "In Safe",
         )
 
     def test_f1_unknown_transition_falls_through(self):

@@ -38,6 +38,12 @@ def _append_event_and_save(cheque_name, event_type, ref_doctype, ref_name, notes
     })
     doc.flags.ignore_permissions = True
     doc.flags.ignore_validate_update_after_submit = True
+    # Historical event rows in the child table may reference now-cancelled
+    # JEs/PEs (e.g., the "Cleared" event references the JE that's now
+    # being cancelled). Those are audit history, not active links.
+    # ignore_links bypasses the link validator which can't distinguish
+    # historical references from new active links.
+    doc.flags.ignore_links = True
     doc.save()
 
 
