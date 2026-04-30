@@ -564,3 +564,48 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 *Phase 2 recommendation:* No code change. The Settings-field-population decision called out in §3 (option (a) admin-configures vs (b) ship defaults) is the only outstanding action; either choice is compatible with current error messaging.
 
 ---
+
+### Flow B — Cheque clearance to Journal Entry
+
+#### Step-by-step trace
+
+1. Pre-state: the Cheque is submitted (`docstatus=1`), `cheque_type=="Incoming"`, and `status` is in `["Received", "In Safe", "Deposited", "Presented"]` for Deposit clearance, or `["Received", "In Safe"]` for Cash clearance (`cheque.js:387-390`).
+2. User opens the cheque form. `_setup_buttons` (`cheque.js:327`) renders **"Create Clearance Entry"** (Deposit) or **"Create Cash Clearance Entry"** (Cash) under the *Accounting* group, depending on `frm.doc.clearance_type`.
+3. User clicks the button. `_make_clearance_je` (`cheque.js:452`) runs client-side guards: if Cash and `cash_account` empty → `frappe.msgprint` orange and abort; if Deposit and `bank_account` empty → same pattern. Then `frappe.confirm`, then `frappe.call({ method: "...cheque_financial.make_clearance_journal_entry", args: { cheque_name } })`.
+4. Server enters `make_clearance_journal_entry` (`cheque_financial.py:255-336`). `frappe.get_doc("Cheque", cheque_name)` then `frappe.has_permission("Cheque", "write", doc=cheque, throw=True)` (line 267).
+5. Validations (`cheque_financial.py:269-272`): `cheque_type` must be `Incoming`, `flt(cheque.amount) > 0`. Each failure raises `frappe.throw`.
+6. Calls `_get_pdc_account(cheque)` (`cheque_financial.py:40`) — same resolver used in Flow A: cheque override → Settings → throw.
+7. Calls `_get_debit_account_for_clearance(cheque)` (`cheque_financial.py:107-115`):
+   - If `cheque.clearance_type == "Cash"` → `_get_cash_gl_account(cheque)` (lines 89-104): returns `cheque.cash_account` if set, else `Cheque Tracker Settings.default_cash_account`, else `frappe.throw`.
+   - Else → `_get_bank_gl_account(cheque)` (lines 69-86): if `cheque.bank_account` set, reads `Bank Account.account` via `frappe.db.get_value`. Falls back to `Cheque Tracker Settings.default_bank_gl_account`. Else `frappe.throw`.
+8. Sets `is_cash = (cheque.clearance_type == "Cash")` (line 276).
+9. Idempotency branch (`cheque_financial.py:279-290`) on `cheque.clearance_journal_entry`: if linked JE has `docstatus == 0`, calls `_update_clearance_je(...)` (line 339) which iterates `je.accounts`, rewrites debit/credit on the matching debit_account and pdc_account rows, refreshes `cheque_no` / `cheque_date`, and `je.save()`s, then returns the existing name. If `docstatus == 1`, `frappe.msgprint` and return. (No `docstatus == 2` fall-through is shown — a cancelled clearance JE would be re-used, since the branch is missing; this is a code-path observation, not a finding for this section.)
+10. Construct new doc: `je = frappe.new_doc("Journal Entry")` (line 293). Sets fields:
+    - `voucher_type = "Journal Entry"`
+    - `company = cheque.company`
+    - `posting_date = today()`
+    - `cheque_no = cheque.cheque_no`, `cheque_date = cheque.due_date`
+    - `clearance_label = "Cash Clearance (Teller)"` if `is_cash` else `"Cheque Clearance"`
+    - `user_remark = f"{clearance_label}: {cheque_name} | Cheque No: {no} | Party: {party}"`
+11. Resolves `currency = cheque.currency or Company.default_currency` and `amt = flt(cheque.amount)` (lines 306-309). Currency is captured but not assigned onto the JE rows.
+12. Appends first row to `je.accounts` (lines 311-317):
+    - `account = debit_account` (Bank GL or Cash GL per step 7)
+    - `debit_in_account_currency = amt`, `credit_in_account_currency = 0`
+    - `cost_center = cheque.cost_center`, `project = cheque.project`
+13. Appends second row (lines 318-322):
+    - `account = pdc_account`
+    - `debit_in_account_currency = 0`, `credit_in_account_currency = amt`
+14. `je.flags.ignore_permissions = True` (line 324), then `je.insert()` — saved as **Draft (`docstatus = 0`)**. The function never calls `je.submit()`.
+15. `_set_cheque_fields(cheque_name, {"clearance_journal_entry": je.name})` (line 327) → `frappe.db.set_value("Cheque", cheque_name, {"clearance_journal_entry": je.name})`.
+16. `frappe.msgprint("Clearance Journal Entry {0} created in Draft (Dr {Bank|Cash} / Cr PDC). Submit it to mark cheque as Cleared.")` (lines 330-335). Function returns `je.name`.
+17. JS receives the name, reloads the cheque form, prompts the user to open the JE.
+18. The user navigates to the Draft JE and clicks **Submit**. ERPNext core runs JE validation and posts the GL entries (Dr `debit_account`, Cr `pdc_account`).
+19. As a side effect of JE submission, the `Journal Entry: on_submit` doc_event fires `cheque_tracker.cheque_tracker.hooks.journal_entry_hooks.journal_entry_on_submit` (`hooks.py:108`).
+20. Handler `journal_entry_on_submit` (`journal_entry_hooks.py:48-51`) calls both `_handle_clearance_je_submit` and `_handle_reversal_je_submit`. Only one matches a given JE; the other returns early after its own back-link lookup.
+21. `_handle_clearance_je_submit` (`journal_entry_hooks.py:54-76`) runs `frappe.get_all("Cheque", filters={"clearance_journal_entry": je.name}, fields=["name","status","pre_bounce_status"], limit=1)`. If no row, returns.
+22. Reads `clearance_type` for the cheque via `frappe.db.get_value` (line 60); `target = "Cash" if clearance_type == "Cash" else "Bank"`.
+23. `frappe.db.set_value("Cheque", cheque_name, {"status": "Cleared", "cleared_date": today()})` (lines 63-66).
+24. `_append_event_and_save` (`journal_entry_hooks.py:29-41`) loads the cheque, appends a `Cleared` event with `reference_doctype="Journal Entry"`, `reference_name=je.name`, notes `"Clearance Journal Entry {name} submitted. Funds moved from PDC Receivable to {Bank|Cash}."`, sets both `ignore_permissions` and `ignore_validate_update_after_submit` flags, and saves.
+25. Flow ends. Final state: Cheque `docstatus=1`, `status="Cleared"`, `cleared_date=today()`, `clearance_journal_entry=JE-name`, audit table contains a `Cleared` event referencing the submitted JE. JE `docstatus=1` with GL entries posted by ERPNext core.
+
+---
