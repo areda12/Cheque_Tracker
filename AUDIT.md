@@ -818,3 +818,68 @@ or simply call `frappe.only_for(["Treasury User", "System Manager"])` for the Tr
 **F2 (P2 latent)** — Accounts User cannot read `Cheque Tracker Settings` per JSON, but has Cheque write so can call `make_recording_payment_entry` / `make_clearance_journal_entry`, which load Settings via `frappe.get_cached_doc`. Behavior depends on cache state. Either grant Accounts User read on Settings, or restrict the PE/JE entry points to Treasury User explicitly.
 
 ---
+
+## 8. Final summary + Phase 2 priority list
+
+### Part A — Production readiness verdict
+
+**`cheque_tracker` v1.1.4 is NOT production-ready as of this audit.** The codebase is well-structured and the financial-posting model is correct in the happy path (PE: Dr PDC / Cr AR; JE: Dr Bank|Cash / Cr PDC; reversal symmetric), but four issues need to land on `fix/production-readiness-audit` before the app can be safely installed on `aldar.erpnext.com`:
+
+1. **C1** — leaf reservation calls `frappe.db.commit()` from inside `Cheque.before_save`, which prematurely commits the outer save() transaction; if any later validation in `before_save` raises, the leaf is reserved-and-committed but the cheque is rolled back, producing an orphan reservation.
+2. **E2 + E8 (bundled)** — cheque status can be moved away from `Cleared` via `change_cheque_status` while the clearance JE remains submitted, decoupling cheque state from GL state; the link fields are also `allow_on_submit: 1`, so a user can clear the back-link from the desk and then re-clearance, doubling GL.
+3. **F1** — `change_cheque_status` enforces only `Cheque write`, not the workflow's role gates; an Accounts User can drive Treasury-only transitions (e.g., `Bounce`).
+4. The Settings-field-population decision from §3 must be made (option (a) or (b)); the app cannot post a single Recording PE until `pdc_receivable_account` is set.
+
+The Settings-table "missing" finding from the original probe was a false positive (see §3 revision). All other findings are P2 or below and either work around quirks (E7 is informational for single-currency EEI) or are cleanup (C4).
+
+### Part B — Phase 2 priority list
+
+#### Co-blockers (must fix before production install)
+
+| # | ID  | File:line                                                | Fix description                                                                                                                                              | Effort |
+|---|-----|----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| 1 | C1  | `cheque/cheque.py:202-208`                               | Replace `db.begin/commit/rollback` with `with frappe.db.savepoint("reserve_leaf"):`; rely on outer Frappe transaction for atomicity.                          | **S**  |
+| 2 | E2  | `cheque/cheque.py:353-396` (`_validate_transition`)      | Add: if `doc.status == "Cleared"` and `new_status != "Cleared"`, throw "Cancel the Clearance Journal Entry first."                                            | **S**  |
+| 3 | E8  | `cheque/cheque.json` (3 link fields)                     | Change `recording_payment_entry`, `clearance_journal_entry`, `reversal_journal_entry` from `allow_on_submit: 1` → `0`. Server-side mutations use `db.set_value` and won't be affected. | **S**  |
+| 4 | F1  | `cheque/cheque.py:353-396` (`_validate_transition`)      | Map each `new_status` to its allowed roles (mirroring `Cheque Workflow.transitions[].allowed`) and call `frappe.only_for(allowed_roles)` before `log_status_change`. | **M**  |
+| 5 | §3  | `hooks.py` and/or admin runbook                          | Decide between option (a) admin populates Settings via desk UI post-install (document in README) or (b) ship an `after_install` hook that creates the Settings doc and logs a configuration warning. | **S**  |
+
+#### Should-fix before production
+
+| # | ID  | File:line                                                | Fix description                                                                                                                                                                   | Effort |
+|---|-----|----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| 6 | F2  | `cheque_tracker_settings.json` perms OR `cheque_financial.py:142,255` | Either add Accounts User read on Cheque Tracker Settings, or add `frappe.only_for(["Treasury User", "System Manager"])` at the top of `make_recording_payment_entry` / `make_clearance_journal_entry`. | **S**  |
+| 7 | C3  | `cheque_batch/cheque_batch.py:36-48` (`_mark_cheques_deposited`) | Either re-raise after logging (atomic batch) or accumulate failures and surface via `frappe.msgprint` so the user sees which cheques weren't transitioned.                       | **S**  |
+| 8 | C2  | `cheque_book/cheque_book.py:169-180` (`get_book_counters`) | Add `frappe.has_permission("Cheque Book", "read", doc=cheque_book, throw=True)` at the top of the function.                                                                       | **S**  |
+| 9 | —   | `test_cheque_financial.py` and a new `test_flow_b_cash.py` | Add: Flow A end-to-end with `tabGL Entry` assertions, Flow B end-to-end with GL assertions, cash-clearance happy path (v1.1.4), C1 regression, E2 regression, E8 link-edit regression, F1 role-gate regressions. | **L**  |
+
+#### Can defer (post-production, lower priority)
+
+| # | ID  | File:line                                                | Fix description                                                                                                                                                              | Effort |
+|---|-----|----------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| 10 | C4 | `cheque_tracker/tasks.py` (top-level)                    | Delete the byte-identical duplicate; only `cheque_tracker/cheque_tracker/tasks.py` is referenced by `hooks.py`.                                                              | **S**  |
+| 11 | D2/D3 | `cheque/cheque.py:56-83` (`Cheque.on_cancel`)          | Before logging Cancelled event, if `recording_payment_entry` is a Draft PE, cancel/delete it and clear the link.                                                              | **S**  |
+| 12 | E7 | `cheque/cheque_financial.py:201-202, 311-322`            | Populate `account_currency` and `exchange_rate` on PE / JE rows. **P0 if Aldar invoices in foreign currency**, otherwise informational.                                       | **M**  |
+| 13 | §2 fixtures filter | `hooks.py:27-29`                              | Replace the broken `Workflow State` filter (`workflow_name` field doesn't exist) with `[["name", "in", [<state names>]]]` — or remove the entry and ship the JSON directly.    | **S**  |
+| 14 | §2 hooks no-op | `cheque_tracker/doctype/cheque_book/cheque_book.py:157-162` and `hooks.py:93-96` | Remove the no-op `on_submit`/`on_cancel` shims and their `doc_events` registration.                                                                                            | **S**  |
+| 15 | §2 global JS | `hooks.py:12` + `public/js/cheque_tracker.js`        | Either move the global Cheque/Cheque Book handlers into the doctype-local `.js` files, or scope via `doctype_js: {...}` instead of `app_include_js`.                            | **M**  |
+| 16 | §7 phantom Cheque Print Template | review                            | Confirm whether a "Cheque Print Template" DocType was intended to ship in v1.1.4 and was missed. If yes, design + add. If no, remove the reference from internal docs.        | **S**  |
+| 17 | §3 patch idempotency | `patches/v1_0/...:25-30`                       | Replace string-match on exception text with `frappe.db.has_index("tabCheque Leaf", "unique_book_cheque_no")`.                                                                  | **S**  |
+| 18 | §4.2 patch commits | `patches/v1_1/...:34`                            | Move `frappe.db.commit()` out of the column-add loop (or remove — DDL auto-commits in MySQL).                                                                                  | **S**  |
+| 19 | §3 default_bank_account | `cheque_tracker_settings.json`              | Confirm the `default_bank_account` field is unused (no read path found). If confirmed, deprecate the field with a comment or remove via patch.                                  | **S**  |
+
+Total Phase 2 effort estimate (co-blockers only): ~1 day. With should-fix items including the test suite expansion: ~3 days. With deferred items: ~1 week.
+
+### Part C — Open items requiring human input
+
+1. **`bench run-tests` output (§6)** — I could not execute `bench --site eei-test.f.frappe.cloud run-tests --app cheque_tracker` from this sandbox (no `bench` binary, dev site is on Frappe Cloud). Please run the command and paste the output; I'll fold pass/fail and any failures into §6 in a follow-up commit.
+2. **Settings field defaults — option (a) or (b) (§3)** — admins populate via desk UI post-install (requires README update only) or ship sensible defaults via fixture / `after_install` (requires code). Decision needed before Phase 2 item #5 can be implemented.
+3. **F1 role mapping (§7 / Phase 2 item #4)** — confirm the desired role-by-transition mapping. The proposal mirrors `Cheque Workflow.transitions[].allowed` from `fixtures/workflow.json`, but the workflow currently allows Treasury User to drive almost every transition; please confirm whether Accounts User should retain *any* write access to status, or be locked out entirely.
+4. **F2 fix path (§7 / Phase 2 item #6)** — grant Accounts User read on Cheque Tracker Settings, or restrict PE/JE creation entry points to Treasury User? Decision affects who can create financial documents through the app's buttons.
+5. **C3 swallow vs. raise (§4.1 / Phase 2 item #7)** — should `_mark_cheques_deposited` be atomic (one cheque failure aborts the whole batch) or partial-with-warnings (current behavior, but surfaced via msgprint instead of silent)?
+6. **Cheque Print Template (§7 / Phase 2 item #16)** — was this DocType supposed to ship in v1.1.4? If yes, scope it; if no, just confirm so I can drop the reference.
+7. **E7 multi-currency timing (§5 / Phase 2 item #12)** — informational for EEI today, but if Aldar ever issues or receives foreign-currency cheques the missing `account_currency` / `exchange_rate` on JE rows promotes to P0. Please flag if multi-currency is on the roadmap.
+
+---
+
+*End of audit. All Phase 2 work is gated on user approval per the original constraints. No code changes have been made to the app outside of `AUDIT.md`.*
