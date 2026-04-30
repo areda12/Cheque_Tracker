@@ -276,6 +276,33 @@ class TestCheque(FrappeTestCase):
         self.assertEqual(chq.status, "Cleared")
         return chq, je
 
+    def _make_received_for_f1(self):
+        """
+        Create an Incoming cheque submitted to Received status, for F1
+        role-gate tests. Incoming cheques auto-transition Draft → Received
+        on submit (via Cheque.on_submit hook), giving a known starting
+        state for testing Received → In Safe (a Treasury-only transition
+        per F1 mapping).
+        """
+        company, customer, currency = _financial_env()
+        if not all([company, customer]):
+            self.skipTest("Missing company or customer in test environment.")
+
+        pdc = _get_or_create_pdc_account(company)
+        bank_gl = _get_test_bank_gl_account(company)
+        if not pdc or not bank_gl:
+            self.skipTest("Missing PDC / Bank GL account in test environment.")
+
+        _configure_settings(company, pdc, bank_gl)
+
+        chq = _make_incoming_cheque(company, customer, currency, pdc)
+        chq = frappe.get_doc("Cheque", chq.name)  # fresh fetch
+        self.assertEqual(
+            chq.status, "Received",
+            f"Expected Incoming cheque to be in Received status after submit, got {chq.status!r}",
+        )
+        return chq
+
     def test_e2_blocks_transition_out_of_cleared(self):
         """E2: change_cheque_status must reject any transition away from
         Cleared while the clearance JE is still submitted."""
@@ -376,18 +403,19 @@ class TestCheque(FrappeTestCase):
 
     def test_f1_accounts_user_blocked_from_treasury_only_transition(self):
         """F1: Accounts User must be blocked from a Treasury-only
-        transition (Draft → Received per workflow)."""
+        transition. Uses Received → In Safe — a row that exists in
+        _TRANSITION_ROLES with allowed roles {Treasury User, System Manager}."""
         if not frappe.db.exists("Role", "Accounts User"):
             self.skipTest("Accounts User role not present on test site.")
 
-        chq = self._make_outgoing_for_f1()
+        chq = self._make_received_for_f1()
         before_status = frappe.db.get_value("Cheque", chq.name, "status")
 
         accounts_email = self._ensure_accounts_user()
         try:
             frappe.set_user(accounts_email)
             with self.assertRaises(frappe.PermissionError):
-                change_cheque_status(chq.name, "Received")
+                change_cheque_status(chq.name, "In Safe")
         finally:
             frappe.set_user("Administrator")
 
@@ -397,15 +425,17 @@ class TestCheque(FrappeTestCase):
 
     def test_f1_treasury_user_allowed_for_treasury_transition(self):
         """F1: Administrator (System Manager) must be allowed to drive
-        a Treasury-only transition (Draft → Received)."""
-        chq = self._make_outgoing_for_f1()
+        a Treasury-only transition. Uses Received → In Safe — a row that
+        exists in _TRANSITION_ROLES with allowed roles
+        {Treasury User, System Manager}."""
+        chq = self._make_received_for_f1()
 
         # Running as Administrator (the test default) — has System Manager.
-        result = change_cheque_status(chq.name, "Received")
+        result = change_cheque_status(chq.name, "In Safe")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(
             frappe.db.get_value("Cheque", chq.name, "status"),
-            "Received",
+            "In Safe",
         )
 
     def test_f1_unknown_transition_falls_through(self):
