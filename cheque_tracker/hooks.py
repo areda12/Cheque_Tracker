@@ -111,6 +111,14 @@ doc_events = {
 }
 
 # ------------------------------------------------------------------
+# Install hooks
+# ------------------------------------------------------------------
+# See cheque_tracker/install.py and AUDIT.md §3 for rationale.
+# Bootstraps Cheque Tracker Settings (Singles row) and warns if
+# required account fields are unconfigured.
+after_install = "cheque_tracker.install.after_install"
+
+# ------------------------------------------------------------------
 # Jinja
 # ------------------------------------------------------------------
 jinja = {

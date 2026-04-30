@@ -21,6 +21,56 @@ bench --site <site> migrate
 bench build --app cheque_tracker
 ```
 
+## Post-Install Configuration
+
+After installing the app, configure the following accounts in
+**Cheque Tracker Settings** (Desk → Cheque Tracker Settings) before
+using the app:
+
+- **PDC Receivable Account** (`pdc_receivable_account`) — the
+  post-dated cheques receivable account. Used as `paid_to` on the
+  Recording Payment Entry and as the credit side of the Clearance
+  Journal Entry. See `account_type` note below.
+- **Default Bank GL Account** (`default_bank_gl_account`) — bank GL
+  account used as the debit side of the Clearance Journal Entry for
+  the deposit flow. Can be overridden per cheque via the cheque's
+  Bank Account field.
+- **Default Cash Account** (`default_cash_account`) — cash GL
+  account used as the debit side of the Clearance Journal Entry for
+  the cash flow (teller cashing). Required only if you use the cash
+  clearance flow; can be overridden per cheque via the cheque's
+  Cash Account field.
+
+The install hook creates the Settings record but leaves these
+fields blank deliberately. The app will raise clear errors on
+Payment Entry / Journal Entry submission until they are set, and
+the install output will include a `WARNING` listing the
+unconfigured fields.
+
+> AR posting uses `Company.default_receivable_account` (set on the
+> Company record), not a Settings field.
+
+### PDC Account `account_type` note (P0 install-time concern)
+
+If your PDC account is configured with `account_type = "Receivable"`
+(or `"Payable"`), ERPNext requires `party` on every GL Entry
+hitting it. The current `make_recording_payment_entry` does not
+populate party on the PDC-side GL row, so submissions will fail
+with `ValidationError: Customer is required against Receivable
+account`.
+
+Two paths to resolve:
+
+1. **Set the production PDC account's `account_type` to `""` or an
+   asset type that does not require party** — simpler; loses some
+   ERPNext receivable-aging integration.
+2. **Patch `make_recording_payment_entry`** to populate
+   `party_type` / `party` on the PDC-side GL row at submission
+   time — production-grade; allows either `account_type` to work.
+   Tracked as a Phase 2 follow-up.
+
+Verify the production setting before first cheque submission.
+
 ## Fresh scaffold (bench new-app flow)
 
 ```bash
