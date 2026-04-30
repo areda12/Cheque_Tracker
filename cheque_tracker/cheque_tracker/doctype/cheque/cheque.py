@@ -356,13 +356,44 @@ class Cheque(Document):
         """
         Persist any in-memory events that have not yet been saved to DB.
         Re-fetches the doc so we only INSERT genuinely new rows.
+
+        Special handling for docstatus=2 (cancelled): Frappe forbids
+        save() on cancelled docs (check_docstatus_transition), so we
+        write event rows via direct child-doc insert. The audit trail
+        must capture the cancellation event regardless.
         """
         new_events = [e for e in (self.events or []) if not e.get("name")]
         if not new_events:
             return
+
         persisted = frappe.get_doc("Cheque", self.name)
+
+        if persisted.docstatus == 2:
+            # G3: cancelled docs cannot be saved. Direct-insert each
+            # event row so the audit trail is preserved.
+            base_idx = (max((e.idx for e in persisted.events), default=0)) + 1
+            for i, ev in enumerate(new_events):
+                child = frappe.new_doc("Cheque Event")
+                child.update({
+                    "parent":            persisted.name,
+                    "parenttype":        "Cheque",
+                    "parentfield":       "events",
+                    "idx":               base_idx + i,
+                    "event_type":        ev.event_type,
+                    "event_datetime":    ev.event_datetime or frappe.utils.now_datetime(),
+                    "from_holder":       ev.from_holder,
+                    "to_holder":         ev.to_holder,
+                    "location":          ev.location,
+                    "reference_doctype": ev.reference_doctype,
+                    "reference_name":    ev.reference_name,
+                    "notes":             ev.notes,
+                })
+                child.db_insert()
+            return
+
+        # Normal path (docstatus 0 or 1): save() handles validation
         for ev in new_events:
-            persisted.append("events", ev)
+            persisted.append("events", ev.as_dict())
         persisted.flags.ignore_permissions = True
         # Required for submitted docs: Frappe blocks child-table changes
         # after submission unless this flag is set.
