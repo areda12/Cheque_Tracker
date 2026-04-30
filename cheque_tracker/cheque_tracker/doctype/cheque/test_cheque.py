@@ -1,9 +1,12 @@
 # Copyright (c) 2024, Ahmed Abbas and contributors
 # License: MIT
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from cheque_tracker.cheque_tracker.doctype.cheque.cheque import Cheque
 from cheque_tracker.cheque_tracker.doctype.cheque_book.test_cheque_book import make_cheque_book
 
 
@@ -144,3 +147,71 @@ class TestCheque(FrappeTestCase):
             filters={"parent": chq.name, "event_type": "Created"},
         )
         self.assertGreaterEqual(len(events), 1)
+
+    # ------------------------------------------------------------------ #
+    #  C1 regression — savepoint rollback on post-reservation failure     #
+    # ------------------------------------------------------------------ #
+
+    def test_c1_leaf_rollback_when_later_validation_fails(self):
+        """
+        Regression for the pre-fix bug where _handle_outgoing_leaf_reservation
+        called frappe.db.commit() after reserving the leaf, prematurely
+        committing the outer save() transaction. A later raise in before_save
+        could not roll the leaf back, leaving an orphan Reserved leaf.
+
+        With the savepoint fix, the leaf reservation is part of the outer
+        transaction; any later raise causes the entire save() to roll back,
+        returning the leaf to Unused.
+        """
+        co, ba, cu, cy = self._env()
+        cb = make_cheque_book(7800, 7810, company=co, bank_account=ba)
+        cb.submit()
+
+        # Sanity: no Reserved leaves yet, all 11 are Unused.
+        reserved_before = frappe.get_all(
+            "Cheque Leaf",
+            filters={"cheque_book": cb.name, "leaf_status": "Reserved"},
+        )
+        self.assertEqual(len(reserved_before), 0)
+
+        # Patch _validate_outgoing_cheque_no (runs AFTER reservation in
+        # before_save) to raise — simulating a post-reservation failure.
+        with patch.object(
+            Cheque,
+            "_validate_outgoing_cheque_no",
+            side_effect=frappe.ValidationError("simulated post-reservation failure"),
+        ):
+            chq = frappe.new_doc("Cheque")
+            chq.cheque_type = "Outgoing"
+            chq.company = co
+            chq.party_type = "Customer"
+            chq.party = cu
+            chq.amount = 1000
+            chq.currency = cy
+            chq.due_date = frappe.utils.add_days(frappe.utils.today(), 30)
+            chq.cheque_book = cb.name
+            chq.cheque_no = "PLACEHOLDER"
+            chq.flags.ignore_permissions = True
+            with self.assertRaises(frappe.ValidationError):
+                chq.insert()
+
+        # After rollback: no Reserved leaves should remain in the book.
+        reserved_after = frappe.get_all(
+            "Cheque Leaf",
+            filters={"cheque_book": cb.name, "leaf_status": "Reserved"},
+        )
+        self.assertEqual(
+            len(reserved_after), 0,
+            "Leaf reservation must be rolled back when a later validation fails.",
+        )
+
+        # No orphan: no leaf in the book should still hold a `cheque` link.
+        orphans = frappe.get_all(
+            "Cheque Leaf",
+            filters={"cheque_book": cb.name, "cheque": ["is", "set"]},
+            pluck="name",
+        )
+        self.assertEqual(
+            orphans, [],
+            f"No leaf should retain a cheque link after rollback (found: {orphans}).",
+        )
