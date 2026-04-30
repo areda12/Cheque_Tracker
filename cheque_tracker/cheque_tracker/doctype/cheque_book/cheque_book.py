@@ -170,6 +170,12 @@ def on_cancel(doc, method=None):
 def get_book_counters(cheque_book):
     """Return live leaf counters – used by dashboard cards."""
     doc = frappe.get_doc("Cheque Book", cheque_book)
+    # C2: _refresh_counters writes via db_set (bypasses Frappe's
+    # write-perm check). Enforce write permission explicitly before
+    # triggering the side-effect, otherwise a read-only role like
+    # Cheque Auditor could call this whitelisted endpoint and cause
+    # persistent counter writes.
+    frappe.has_permission("Cheque Book", "write", doc=doc, throw=True)
     doc._refresh_counters()
     return {
         "status":           frappe.db.get_value("Cheque Book", cheque_book, "status"),
