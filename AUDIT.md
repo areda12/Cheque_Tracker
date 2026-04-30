@@ -519,4 +519,26 @@ C1 is the only true blocker. C2 and C3 are recommended fixes before production i
 22. `_append_event_and_save` (`payment_entry_hooks.py:31-43`) loads the cheque, appends a `Received` event with `reference_doctype="Payment Entry"`, `reference_name=pe.name`, sets both `ignore_permissions` and `ignore_validate_update_after_submit` flags, and saves.
 23. Flow ends. Final state: Cheque `docstatus=1`, `status="Received"`, `recording_payment_entry=PE-name`, audit table contains a `Received` event referencing the submitted PE. PE `docstatus=1` with GL entries posted by ERPNext core.
 
+#### Risks identified
+
+**D1 — Auto-submit vs draft**
+*Severity:* **P3** (current behavior is the safer default).
+*Description:* `make_recording_payment_entry` calls `pe.insert()` only — the PE is left as Draft (`docstatus=0`) and the user must click Submit to post GL.
+*Phase 2 recommendation:* Keep Draft as the default. If high-volume sites later need 1-step UX, add an opt-in `auto_submit_recording_pe` flag on Cheque Tracker Settings rather than changing the default.
+
+**D2 — Cheque cancellation does not cancel a Draft PE**
+*Severity:* **P1**.
+*Description:* `Cheque.on_cancel` (`cheque.py:56-83`) blocks cancellation only if a *submitted* PE/JE is linked (`_has_submitted_accounting_docs`). A linked Draft PE is left orphaned, still pointing at the now-cancelled cheque. Submitting that orphan later will run `payment_entry_on_submit`, which writes a `Received` audit event against the cancelled cheque (the status update is skipped by the `safe_to_set` guard, but the event row still appears).
+*Phase 2 recommendation:* In `Cheque.on_cancel`, before logging the Cancelled event, look up `recording_payment_entry`; if it exists with `docstatus == 0`, call `pe.cancel()` (or `frappe.delete_doc("Payment Entry", pe_name)` since it's a draft) and clear the link via `db.set_value`.
+
+**D3 — Cheque amendment leaves orphan Draft PE behind**
+*Severity:* **P2**.
+*Description:* Amend = cancel + new-doc-with-`amended_from`. With submitted PE linked, the cancel step is correctly blocked (D2's mitigation also covers this). With only a Draft PE, the cancel succeeds and the orphan persists; the new amended Cheque has no `recording_payment_entry` link and the user must regenerate one manually. No automatic re-link or copy is performed.
+*Phase 2 recommendation:* Same fix as D2 (cancelling the Draft PE on `on_cancel`) closes the orphan path automatically. Optionally, document in `README.md` that the amended cheque starts with a fresh PE workflow.
+
+**D4 — Idempotency of `on_submit` firing twice**
+*Severity:* **P3**.
+*Description:* `Cheque.on_submit` does not create a PE — it only writes status/event rows. PE creation is exclusively user-triggered via the whitelisted `make_recording_payment_entry`, which guards on `cheque.recording_payment_entry` (returns existing Draft / existing Submitted; only creates new when status is `2` or unset). A duplicate PE from re-submission of the cheque is therefore not possible. A theoretical race exists between `pe.insert()` (line 227) and `_set_cheque_fields` (line 230) if two concurrent button clicks beat the link write, but the window is sub-millisecond.
+*Phase 2 recommendation:* No code change required. If the race is ever observed, wrap lines 174-230 in a `frappe.db.savepoint("recording_pe")` and add a `SELECT ... FOR UPDATE` row-lock on the Cheque before the idempotency check.
+
 ---
