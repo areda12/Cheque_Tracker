@@ -77,24 +77,26 @@ def _bootstrap_settings():
 def ensure_ui_fixtures():
     """
     Idempotently re-apply UI fixture files that Frappe's standard import
-    path sometimes silently skips during `bench migrate`.
+    path consistently silently skips during `bench migrate`.
 
     Wired in hooks.py via `after_migrate = "cheque_tracker.install.ensure_ui_fixtures"`.
 
-    Observed during PR #12 deploys on Frappe Cloud: workspace_sidebar.json
-    and desktop_icon.json are valid, on disk, and registered in hooks.py
-    fixtures, but the records did not materialize in DB after migrate.
-    Manually invoking import_doc on the same files works correctly.
+    Observed during PR #12 deploys on Frappe Cloud: workspace.json,
+    workspace_sidebar.json, and desktop_icon.json are all valid, on disk,
+    and registered in hooks.py fixtures, but the records did not
+    materialize in DB after migrate. Manually invoking import_doc on the
+    same files works correctly every time.
 
     This hook re-applies these fixture files via import_doc on every
-    migrate as belt-and-suspenders. import_doc is idempotent — it
-    inserts if the record doesn't exist, updates if it does. Failures
-    on individual files are swallowed and logged rather than raised,
-    so a UI fixture issue never blocks a migrate.
+    migrate as belt-and-suspenders. import_doc is idempotent — it inserts
+    if the record doesn't exist, updates if it does. Failures on
+    individual files are swallowed and logged rather than raised, so a UI
+    fixture issue never blocks a migrate.
     """
     fixtures_dir = os.path.join(frappe.get_app_path("cheque_tracker"), "fixtures")
 
     ui_fixture_files = [
+        "workspace.json",
         "workspace_sidebar.json",
         "desktop_icon.json",
     ]

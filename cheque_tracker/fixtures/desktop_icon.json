@@ -13,6 +13,7 @@
     "icon": "receipt-text",
     "hidden": 0,
     "restrict_removal": 0,
+    "bg_color": "blue",
     "doctype": "Desktop Icon"
   }
 ]
