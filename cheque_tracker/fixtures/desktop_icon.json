@@ -10,7 +10,7 @@
     "sidebar": "Cheque Tracker",
     "standard": 1,
     "app": "cheque_tracker",
-    "icon": "banknote",
+    "icon": "receipt-text",
     "hidden": 0,
     "restrict_removal": 0,
     "doctype": "Desktop Icon"
