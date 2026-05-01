@@ -74,36 +74,41 @@ def _bootstrap_settings():
     )
 
 
-def ensure_workspace_sidebar():
+def ensure_ui_fixtures():
     """
-    Idempotently apply the workspace_sidebar.json fixture.
+    Idempotently re-apply UI fixture files that Frappe's standard import
+    path sometimes silently skips during `bench migrate`.
 
-    Wired in hooks.py via `after_migrate = "cheque_tracker.install.ensure_workspace_sidebar"`.
+    Wired in hooks.py via `after_migrate = "cheque_tracker.install.ensure_ui_fixtures"`.
 
-    Frappe's standard fixture import (also configured in hooks.py) sometimes
-    silently skips Workspace Sidebar records during deploy — observed during
-    PR #12 deploy on Frappe Cloud, where workspace_sidebar.json was valid and
-    on disk but the record did not materialize in DB. Manually invoking
-    import_doc on the same file works correctly.
+    Observed during PR #12 deploys on Frappe Cloud: workspace_sidebar.json
+    and desktop_icon.json are valid, on disk, and registered in hooks.py
+    fixtures, but the records did not materialize in DB after migrate.
+    Manually invoking import_doc on the same files works correctly.
 
-    This hook re-applies the fixture file via import_doc on every migrate as
-    belt-and-suspenders. import_doc is idempotent — it inserts if the record
-    doesn't exist, updates if it does. Failures are swallowed and logged
-    rather than raised, so a sidebar issue never blocks a migrate.
+    This hook re-applies these fixture files via import_doc on every
+    migrate as belt-and-suspenders. import_doc is idempotent — it
+    inserts if the record doesn't exist, updates if it does. Failures
+    on individual files are swallowed and logged rather than raised,
+    so a UI fixture issue never blocks a migrate.
     """
-    fixture_path = os.path.join(
-        frappe.get_app_path("cheque_tracker"),
-        "fixtures",
+    fixtures_dir = os.path.join(frappe.get_app_path("cheque_tracker"), "fixtures")
+
+    ui_fixture_files = [
         "workspace_sidebar.json",
-    )
-    if not os.path.exists(fixture_path):
-        return
+        "desktop_icon.json",
+    ]
 
-    try:
-        from frappe.core.doctype.data_import.data_import import import_doc
-        import_doc(fixture_path)
-        frappe.db.commit()
-    except Exception:
-        frappe.log_error(
-            title="Cheque Tracker: Workspace Sidebar fixture re-import failed",
-        )
+    from frappe.core.doctype.data_import.data_import import import_doc
+
+    for filename in ui_fixture_files:
+        fixture_path = os.path.join(fixtures_dir, filename)
+        if not os.path.exists(fixture_path):
+            continue
+        try:
+            import_doc(fixture_path)
+            frappe.db.commit()
+        except Exception:
+            frappe.log_error(
+                title=f"Cheque Tracker: {filename} re-import failed",
+            )

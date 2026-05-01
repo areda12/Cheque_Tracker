@@ -137,7 +137,7 @@ doc_events = {
 # Bootstraps Cheque Tracker Settings (Singles row) and warns if
 # required account fields are unconfigured.
 after_install = "cheque_tracker.install.after_install"
-after_migrate = "cheque_tracker.install.ensure_workspace_sidebar"
+after_migrate = "cheque_tracker.install.ensure_ui_fixtures"
 
 # ------------------------------------------------------------------
 # Jinja
