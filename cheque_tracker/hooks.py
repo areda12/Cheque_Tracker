@@ -52,6 +52,22 @@ fixtures = [
         "filters": [["name", "=", "Cheque Tracker"]],
     },
     {
+        "dt": "Workspace Sidebar",
+        "filters": [["name", "=", "Cheque Tracker"]],
+    },
+    {
+        "dt": "Number Card",
+        "filters": [["module", "=", "Cheque Tracker"]],
+    },
+    {
+        "dt": "Dashboard Chart",
+        "filters": [["module", "=", "Cheque Tracker"]],
+    },
+    {
+        "dt": "Dashboard",
+        "filters": [["module", "=", "Cheque Tracker"]],
+    },
+    {
         "dt": "Report",
         "filters": [
             [

@@ -71,6 +71,19 @@ Two paths to resolve:
 
 Verify the production setting before first cheque submission.
 
+### Desktop Hub Tile (Optional Polish)
+
+The Workspace, Dashboard, Number Cards, Charts, and Workspace Sidebar are all auto-installed via fixtures. However, to make the Cheque Tracker tile appear under the Accounting hub on the front page (`/app`), an Administrator must manually configure the Desktop Icon record after install:
+
+1. Navigate to: `/app/desktop-icon/Cheque Tracker`
+2. Set the following fields:
+   - `parent_icon`: `Accounting` (so the tile appears under the Accounting hub)
+   - `icon`: `banknote`
+   - `bg_color`: leave empty (default theme color) or set to a custom color like `gray`
+3. Save.
+
+This is a one-time site-level customization. Frappe does not ship Desktop Icon fixtures with apps because they're considered per-site/per-user configuration. The Workspace itself is fully accessible via direct URL `/app/cheque-tracker` or via global search regardless of this step.
+
 ## Fresh scaffold (bench new-app flow)
 
 ```bash
