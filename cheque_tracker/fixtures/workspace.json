@@ -8,7 +8,7 @@
     "module": "Accounts",
     "app": "cheque_tracker",
     "type": "Workspace",
-    "icon": "banknote",
+    "icon": "receipt-text",
     "indicator_color": "green",
     "hide_custom": 0,
     "public": 1,
