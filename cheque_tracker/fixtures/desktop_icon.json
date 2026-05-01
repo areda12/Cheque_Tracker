@@ -1,0 +1,18 @@
+[
+  {
+    "name": "Cheque Tracker",
+    "owner": "Administrator",
+    "label": "Cheque Tracker",
+    "icon_type": "Link",
+    "link_type": "Workspace Sidebar",
+    "link_to": "Cheque Tracker",
+    "parent_icon": "Accounting",
+    "sidebar": "Cheque Tracker",
+    "standard": 1,
+    "app": "cheque_tracker",
+    "icon": "banknote",
+    "hidden": 0,
+    "restrict_removal": 0,
+    "doctype": "Desktop Icon"
+  }
+]

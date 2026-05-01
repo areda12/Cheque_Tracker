@@ -56,6 +56,10 @@ fixtures = [
         "filters": [["name", "=", "Cheque Tracker"]],
     },
     {
+        "dt": "Desktop Icon",
+        "filters": [["app", "=", "cheque_tracker"]],
+    },
+    {
         "dt": "Number Card",
         "filters": [["module", "=", "Cheque Tracker"]],
     },
