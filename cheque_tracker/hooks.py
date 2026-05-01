@@ -68,10 +68,6 @@ fixtures = [
         "filters": [["module", "=", "Cheque Tracker"]],
     },
     {
-        "dt": "Dashboard",
-        "filters": [["module", "=", "Cheque Tracker"]],
-    },
-    {
         "dt": "Report",
         "filters": [
             [
