@@ -6,6 +6,8 @@ Install hooks for Cheque Tracker.
 Wired in hooks.py via `after_install = "cheque_tracker.install.after_install"`.
 """
 
+import os
+
 import frappe
 
 
@@ -70,3 +72,38 @@ def _bootstrap_settings():
         message=msg,
         title="Cheque Tracker: Settings Not Configured",
     )
+
+
+def ensure_workspace_sidebar():
+    """
+    Idempotently apply the workspace_sidebar.json fixture.
+
+    Wired in hooks.py via `after_migrate = "cheque_tracker.install.ensure_workspace_sidebar"`.
+
+    Frappe's standard fixture import (also configured in hooks.py) sometimes
+    silently skips Workspace Sidebar records during deploy — observed during
+    PR #12 deploy on Frappe Cloud, where workspace_sidebar.json was valid and
+    on disk but the record did not materialize in DB. Manually invoking
+    import_doc on the same file works correctly.
+
+    This hook re-applies the fixture file via import_doc on every migrate as
+    belt-and-suspenders. import_doc is idempotent — it inserts if the record
+    doesn't exist, updates if it does. Failures are swallowed and logged
+    rather than raised, so a sidebar issue never blocks a migrate.
+    """
+    fixture_path = os.path.join(
+        frappe.get_app_path("cheque_tracker"),
+        "fixtures",
+        "workspace_sidebar.json",
+    )
+    if not os.path.exists(fixture_path):
+        return
+
+    try:
+        from frappe.core.doctype.data_import.data_import import import_doc
+        import_doc(fixture_path)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title="Cheque Tracker: Workspace Sidebar fixture re-import failed",
+        )
