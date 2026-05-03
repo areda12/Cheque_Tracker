@@ -60,41 +60,11 @@ class Cheque(Document):
         self._flush_events()
 
     def on_update(self):
-        """React to workflow-driven status transitions on submitted cheques.
-
-        The Cheque Workflow drives every status change via doc.save(); this
-        hook detects the transition with get_doc_before_save() and fires
-        the matching GL side effect. Only Incoming cheques are handled
-        here — Outgoing/buying side is out of scope.
-        """
-        if self.is_new() or self.cheque_type != "Incoming":
-            return
-        before = self.get_doc_before_save()
-        if not before or before.status == self.status:
-            return
-
-        old = before.status
-        new = self.status
-
-        # Cleared: only legal source per workflow is Deposited
-        if new == "Cleared" and old == "Deposited":
-            if not self.cleared_date:
-                frappe.throw(_("Set Cleared Date before marking as Cleared."))
-            if not self.bank_account:
-                frappe.throw(_("Set Bank Account before marking as Cleared."))
-            cheque_financial.make_clearance_je(self)
-
-        # Bounced: only legal source per workflow is Deposited
-        elif new == "Bounced" and old == "Deposited":
-            cheque_financial.cancel_handover_je(self)
-
-        # Returned: from Received, In Safe, or Deposited — undo Hand Over JE
-        elif new == "Returned" and old in ("Received", "In Safe", "Deposited"):
-            cheque_financial.cancel_handover_je(self)
-
-        # Cancelled (workflow action, NOT docstatus cancel) — undo Hand Over JE
-        elif new == "Cancelled" and old in ("Received", "In Safe"):
-            cheque_financial.cancel_handover_je(self)
+        # Workflow-driven status transitions on submitted Cheques are handled
+        # in on_update_after_submit; Frappe routes saves to that hook for
+        # docstatus=1, never to on_update. Drafts have no GL-bearing
+        # transitions, so this method is intentionally a no-op.
+        return
 
     def on_cancel(self):
         # docstatus 1→2 cancellation: reverse chain — clearance first, then hand-over.
@@ -122,7 +92,8 @@ class Cheque(Document):
         self._flush_events()
 
     def on_update_after_submit(self):
-        """Audit-log allow_on_submit field changes (bank_account, cash_account, clearance_type)."""
+        """Audit-log allow_on_submit field changes AND fire workflow-driven
+        GL side effects. Runs on every save to a docstatus=1 doc."""
         before = self.get_doc_before_save()
         if not before:
             return
@@ -166,6 +137,36 @@ class Cheque(Document):
             )
 
         self._flush_events()
+
+        # Workflow-driven GL side effects.
+        # has_value_changed reads from _doc_before_save — set reliably by
+        # the framework before this hook runs, even on workflow saves.
+        if self.cheque_type != "Incoming":
+            return
+        if not self.has_value_changed("status"):
+            return
+
+        old, new = before.status, self.status
+
+        # Cleared: only legal source per workflow is Deposited
+        if new == "Cleared" and old == "Deposited":
+            if not self.cleared_date:
+                frappe.throw(_("Set Cleared Date before marking as Cleared."))
+            if not self.bank_account:
+                frappe.throw(_("Set Bank Account before marking as Cleared."))
+            cheque_financial.make_clearance_je(self)
+
+        # Bounced: only legal source per workflow is Deposited
+        elif new == "Bounced" and old == "Deposited":
+            cheque_financial.cancel_handover_je(self)
+
+        # Returned: from Received, In Safe, or Deposited — undo Hand Over JE
+        elif new == "Returned" and old in ("Received", "In Safe", "Deposited"):
+            cheque_financial.cancel_handover_je(self)
+
+        # Cancelled (workflow action, NOT docstatus cancel) — undo Hand Over JE
+        elif new == "Cancelled" and old in ("Received", "In Safe"):
+            cheque_financial.cancel_handover_je(self)
 
     # ------------------------------------------------------------------ #
     #  Leaf reservation (Outgoing)                                         #
