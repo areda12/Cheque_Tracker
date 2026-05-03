@@ -46,10 +46,10 @@ class Cheque(Document):
         self._validate_outgoing_cheque_no()
 
     def before_submit(self):
-        # Submit transitions Draft → Received and creates the Hand Over JE.
-        # GL postings on the selling side are side effects of Cheque actions.
+        # Submit transitions an Incoming Cheque from Draft → Received with
+        # NO GL effect. The Clearance JE on workflow Clear is the only
+        # GL posting in the lifecycle.
         if self.cheque_type == "Incoming":
-            cheque_financial.make_handover_je(self)
             self.status = "Received"
 
     def on_submit(self):
@@ -67,14 +67,11 @@ class Cheque(Document):
         return
 
     def on_cancel(self):
-        # docstatus 1→2 cancellation: reverse chain — clearance first, then hand-over.
-        # Cancelling the Hand Over JE auto-reverts SI (Paid → Unpaid) and
-        # decrements SO advance_paid; ERPNext handles those side effects.
-        if self.cheque_type == "Incoming":
-            if self.clearance_je:
-                cheque_financial.cancel_clearance_je(self)
-            if self.handover_je:
-                cheque_financial.cancel_handover_je(self)
+        # docstatus 1→2 cancellation: only the Clearance JE may exist. Submit /
+        # Deposit / Bounce / Return / workflow-Cancel never post GL, so there
+        # is nothing else to reverse.
+        if self.cheque_type == "Incoming" and self.clearance_je:
+            cheque_financial.cancel_clearance_je(self)
 
         if self.cheque_type == "Outgoing" and self.cheque_leaf:
             leaf_status = frappe.db.get_value(
@@ -148,25 +145,15 @@ class Cheque(Document):
 
         old, new = before.status, self.status
 
-        # Cleared: only legal source per workflow is Deposited
+        # The ONLY GL transition: Deposited → Cleared posts the Clearance JE.
+        # All other transitions (Bounce, Return, Cancel Cheque) are status-only —
+        # nothing was posted on Submit, so there is nothing to reverse.
         if new == "Cleared" and old == "Deposited":
             if not self.cleared_date:
                 frappe.throw(_("Set Cleared Date before marking as Cleared."))
             if not self.bank_account:
                 frappe.throw(_("Set Bank Account before marking as Cleared."))
             cheque_financial.make_clearance_je(self)
-
-        # Bounced: only legal source per workflow is Deposited
-        elif new == "Bounced" and old == "Deposited":
-            cheque_financial.cancel_handover_je(self)
-
-        # Returned: from Received, In Safe, or Deposited — undo Hand Over JE
-        elif new == "Returned" and old in ("Received", "In Safe", "Deposited"):
-            cheque_financial.cancel_handover_je(self)
-
-        # Cancelled (workflow action, NOT docstatus cancel) — undo Hand Over JE
-        elif new == "Cancelled" and old in ("Received", "In Safe"):
-            cheque_financial.cancel_handover_je(self)
 
     # ------------------------------------------------------------------ #
     #  Leaf reservation (Outgoing)                                         #

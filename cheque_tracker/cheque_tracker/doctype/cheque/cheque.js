@@ -10,7 +10,7 @@
  * effect when status changes.
  *
  * This file adds:
- *   • Quick-view buttons for linked Hand Over / Clearance JEs.
+ *   • Quick-view button for the linked Clearance JE.
  *   • A pre-Clear dialog wrapping the workflow's Clear action that
  *     prompts for cleared_date and bank_account when missing.
  */
@@ -262,15 +262,10 @@ function _setup_buttons(frm) {
     // the matching GL side effect when status changes.
     //
     // We add a couple of conveniences:
-    //   • Quick-view buttons for linked Hand Over / Clearance JEs.
+    //   • Quick-view button for the linked Clearance JE.
     //   • A pre-Clear dialog that prompts for cleared_date and
     //     bank_account, saves them, then triggers the workflow Clear.
 
-    if (frm.doc.handover_je) {
-        frm.add_custom_button(__("View Hand Over JE"), () => {
-            frappe.set_route("Form", "Journal Entry", frm.doc.handover_je);
-        }, __("View"));
-    }
     if (frm.doc.clearance_je) {
         frm.add_custom_button(__("View Clearance JE"), () => {
             frappe.set_route("Form", "Journal Entry", frm.doc.clearance_je);

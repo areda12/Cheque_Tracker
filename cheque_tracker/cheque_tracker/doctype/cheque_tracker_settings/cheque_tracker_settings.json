@@ -5,19 +5,10 @@
  "document_type": "Document",
  "engine": "InnoDB",
  "field_order": [
-  "pdc_receivable_account",
   "default_bank_account",
   "default_bank_gl_account"
  ],
  "fields": [
-  {
-   "fieldname": "pdc_receivable_account",
-   "fieldtype": "Link",
-   "label": "PDC Receivable Account",
-   "options": "Account",
-   "description": "Asset account used as the interim 'PDC Receivable / Cheques Under Collection' account.",
-   "reqd": 0
-  },
   {
    "fieldname": "default_bank_account",
    "fieldtype": "Link",

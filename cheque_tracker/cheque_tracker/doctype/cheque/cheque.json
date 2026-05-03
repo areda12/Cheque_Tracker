@@ -44,8 +44,6 @@
   "project",
   "cost_center",
   "section_financial_posting",
-  "handover_je",
-  "col_break_fin",
   "clearance_je",
   "section_events",
   "events",
@@ -292,18 +290,6 @@
    "fieldname": "section_financial_posting",
    "fieldtype": "Section Break",
    "label": "Financial Posting"
-  },
-  {
-   "fieldname": "handover_je",
-   "fieldtype": "Link",
-   "options": "Journal Entry",
-   "label": "Hand Over JE",
-   "read_only": 1,
-   "depends_on": "eval:doc.handover_je"
-  },
-  {
-   "fieldname": "col_break_fin",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "clearance_je",

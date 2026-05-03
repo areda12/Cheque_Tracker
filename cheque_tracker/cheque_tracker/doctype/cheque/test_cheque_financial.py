@@ -129,9 +129,10 @@ def _make_incoming_cheque(company, customer, currency, pdc_account=None):
 
 
 def _configure_settings(company, pdc_account, bank_gl_account):
-    """Configure Cheque Tracker Settings for tests."""
+    """Configure Cheque Tracker Settings for tests. ``pdc_account`` is
+    accepted for backwards-compat with old call sites; the field has been
+    removed from Settings and the value is ignored."""
     settings = frappe.get_doc("Cheque Tracker Settings")
-    settings.pdc_receivable_account = pdc_account
     settings.default_bank_gl_account = bank_gl_account
     settings.flags.ignore_permissions = True
     settings.save()

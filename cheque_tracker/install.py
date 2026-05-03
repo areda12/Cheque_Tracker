@@ -32,7 +32,6 @@ def after_install():
 # in this list. `default_bank_account` is an orphan field with no read
 # path in the app code (audit §3 follow-up #21) and is also excluded.
 _REQUIRED_ACCOUNT_FIELDS = (
-    "pdc_receivable_account",
     "default_bank_gl_account",
     "default_cash_account",
 )
