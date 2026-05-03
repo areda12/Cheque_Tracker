@@ -271,9 +271,25 @@ function _setup_buttons(frm) {
             frappe.set_route("Form", "Journal Entry", frm.doc.clearance_je);
         }, __("View"));
     }
+    if (frm.doc.replacement_cheque) {
+        frm.add_custom_button(__("View Replacement"), () => {
+            frappe.set_route("Form", "Cheque", frm.doc.replacement_cheque);
+        }, __("View"));
+    }
+    if (frm.doc.original_cheque) {
+        frm.add_custom_button(__("View Original (Replaced)"), () => {
+            frappe.set_route("Form", "Cheque", frm.doc.original_cheque);
+        }, __("View"));
+    }
 
-    if (frm.doc.cheque_type === "Incoming" && frm.doc.status === "Deposited") {
+    const incoming_pre_clear = frm.doc.cheque_type === "Incoming" && frm.doc.status === "Deposited";
+    const outgoing_pre_clear = frm.doc.cheque_type === "Outgoing" && frm.doc.status === "Handed Over";
+    if (incoming_pre_clear || outgoing_pre_clear) {
         _wrap_clear_action(frm);
+    }
+
+    if (frm.doc.status === "Bounced" && !frm.doc.replacement_cheque) {
+        _wrap_replace_action(frm);
     }
 }
 
@@ -330,4 +346,140 @@ function _wrap_clear_action(frm) {
         });
         d.show();
     });
+}
+
+
+// Patch the workflow's "Replace" action so clicking it opens a dialog
+// offering "Link Existing Draft" or "Create New". Both paths set up the
+// bidirectional original_cheque ↔ replacement_cheque link and apply the
+// Replace workflow transition.
+function _wrap_replace_action(frm) {
+    const $btn = frm.page.menu.find(
+        `[data-label="${encodeURIComponent("Replace")}"]`
+    );
+    if (!$btn.length || $btn.data("ct-wrapped")) return;
+    $btn.data("ct-wrapped", true);
+
+    $btn.off("click").on("click", () => _show_replace_dialog(frm));
+}
+
+
+function _show_replace_dialog(frm) {
+    const isOutgoing = frm.doc.cheque_type === "Outgoing";
+
+    const fields = [
+        {
+            fieldname: "mode",
+            fieldtype: "Select",
+            label: __("Replacement Source"),
+            options: ["Create New", "Link Existing Draft"],
+            default: "Create New",
+            reqd: 1,
+            onchange() {
+                const mode = d.get_value("mode");
+                d.set_df_property("existing_cheque", "hidden", mode !== "Link Existing Draft");
+                d.set_df_property("new_section", "hidden", mode !== "Create New");
+            },
+        },
+
+        // === Link Existing path ===
+        {
+            fieldname: "existing_cheque",
+            fieldtype: "Link",
+            options: "Cheque",
+            label: __("Existing Draft Cheque"),
+            hidden: 1,
+            get_query: () => ({
+                filters: {
+                    docstatus: 0,
+                    cheque_type: frm.doc.cheque_type,
+                    party_type: frm.doc.party_type,
+                    party: frm.doc.party,
+                    reference_doctype: frm.doc.reference_doctype || "",
+                    reference_name: frm.doc.reference_name || "",
+                },
+            }),
+            description: __("Filtered to drafts with same type, party, and reference."),
+        },
+
+        // === Create New path ===
+        { fieldname: "new_section", fieldtype: "Section Break", label: __("New Cheque Details") },
+        {
+            fieldname: "cheque_no", fieldtype: "Data", label: __("New Cheque No"),
+            description: __("The number on the replacement cheque"),
+        },
+        { fieldname: "issue_date", fieldtype: "Date", label: __("Issue Date"),
+          default: frappe.datetime.get_today() },
+        { fieldname: "due_date", fieldtype: "Date", label: __("Due Date"),
+          default: frappe.datetime.get_today() },
+        { fieldname: "amount", fieldtype: "Currency", label: __("Amount"),
+          default: frm.doc.amount,
+          description: __("Defaults to original amount; change if replacement differs.") },
+        { fieldname: "drawee_bank", fieldtype: "Link", options: "Bank",
+          label: __("Drawee Bank"), default: frm.doc.drawee_bank },
+    ];
+
+    if (isOutgoing) {
+        fields.push(
+            { fieldname: "cheque_book", fieldtype: "Link", options: "Cheque Book",
+              label: __("Cheque Book"),
+              get_query: () => ({ filters: { status: "Active", company: frm.doc.company } }) },
+            { fieldname: "cheque_leaf", fieldtype: "Link", options: "Cheque Leaf",
+              label: __("Cheque Leaf"),
+              get_query: () => ({
+                  filters: {
+                      cheque_book: d.get_value("cheque_book"),
+                      leaf_status: "Available",
+                  },
+              }) }
+        );
+    }
+
+    const d = new frappe.ui.Dialog({
+        title: __("Replace Cheque {0}", [frm.doc.name]),
+        fields,
+        primary_action_label: __("Replace"),
+        primary_action(values) {
+            const mode = values.mode;
+            let call;
+            if (mode === "Link Existing Draft") {
+                if (!values.existing_cheque) {
+                    frappe.throw(__("Select a draft cheque to link."));
+                    return;
+                }
+                call = frm.call("link_replacement",
+                    { replacement_name: values.existing_cheque });
+            } else {
+                if (!values.cheque_no || !values.issue_date || !values.due_date) {
+                    frappe.throw(__("Cheque No, Issue Date, and Due Date are required."));
+                    return;
+                }
+                if (isOutgoing && (!values.cheque_book || !values.cheque_leaf)) {
+                    frappe.throw(__("Cheque Book and Leaf are required for Outgoing replacements."));
+                    return;
+                }
+                call = frm.call("create_replacement", {
+                    cheque_no: values.cheque_no,
+                    issue_date: values.issue_date,
+                    due_date: values.due_date,
+                    drawee_bank: values.drawee_bank,
+                    cheque_book: values.cheque_book,
+                    cheque_leaf: values.cheque_leaf,
+                    amount: values.amount,
+                });
+            }
+            call.then((r) => {
+                d.hide();
+                frm.reload_doc();
+                if (mode === "Create New" && r.message) {
+                    frappe.show_alert({
+                        message: __("Replacement created: {0}", [r.message]),
+                        indicator: "green",
+                    });
+                    setTimeout(() => frappe.set_route("Form", "Cheque", r.message), 800);
+                }
+            });
+        },
+    });
+    d.show();
 }

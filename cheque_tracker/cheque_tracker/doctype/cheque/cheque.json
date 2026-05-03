@@ -45,6 +45,9 @@
   "cost_center",
   "section_financial_posting",
   "clearance_je",
+  "col_break_replacement",
+  "replacement_cheque",
+  "original_cheque",
   "section_events",
   "events",
   "section_attach",
@@ -298,6 +301,28 @@
    "label": "Clearance JE",
    "read_only": 1,
    "depends_on": "eval:doc.clearance_je"
+  },
+  {
+   "fieldname": "col_break_replacement",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "replacement_cheque",
+   "fieldtype": "Link",
+   "options": "Cheque",
+   "label": "Replacement Cheque",
+   "read_only": 1,
+   "depends_on": "eval:doc.replacement_cheque",
+   "description": "The new cheque issued to replace this one (set when this cheque is Replaced)."
+  },
+  {
+   "fieldname": "original_cheque",
+   "fieldtype": "Link",
+   "options": "Cheque",
+   "label": "Replacing",
+   "read_only": 1,
+   "depends_on": "eval:doc.original_cheque",
+   "description": "The bounced cheque this one replaces."
   },
   {
    "fieldname": "section_events",
