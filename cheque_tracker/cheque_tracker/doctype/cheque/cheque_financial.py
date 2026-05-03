@@ -128,6 +128,11 @@ def cancel_handover_je(cheque):
     if je.docstatus != 1:
         return  # already cancelled
     je.flags.ignore_permissions = True
+    # Workflow-driven cancellations (Bounce/Return/Cancel Cheque) leave the
+    # Cheque at docstatus=1 with handover_je still set. That live back-link
+    # would trip Frappe's check_no_back_links_exist. The link is our audit
+    # trail to a cancelled JE — bypass the check.
+    je.flags.ignore_links = True
     je.cancel()
 
 
@@ -189,4 +194,6 @@ def cancel_clearance_je(cheque):
     if je.docstatus != 1:
         return
     je.flags.ignore_permissions = True
+    # Same back-link bypass as cancel_handover_je — see comment there.
+    je.flags.ignore_links = True
     je.cancel()
