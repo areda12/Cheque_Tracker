@@ -46,11 +46,10 @@ class Cheque(Document):
         self._validate_outgoing_cheque_no()
 
     def before_submit(self):
-        # Submit transitions an Incoming Cheque from Draft → Received with
-        # NO GL effect. The Clearance JE on workflow Clear is the only
-        # GL posting in the lifecycle.
-        if self.cheque_type == "Incoming":
-            self.status = "Received"
+        # Submit transitions Draft → Received for both directions with NO
+        # GL effect. The Clearance JE on workflow Clear is the only GL
+        # posting in the lifecycle.
+        self.status = "Received"
 
     def on_submit(self):
         if self.cheque_type == "Outgoing":
@@ -67,10 +66,10 @@ class Cheque(Document):
         return
 
     def on_cancel(self):
-        # docstatus 1→2 cancellation: only the Clearance JE may exist. Submit /
-        # Deposit / Bounce / Return / workflow-Cancel never post GL, so there
-        # is nothing else to reverse.
-        if self.cheque_type == "Incoming" and self.clearance_je:
+        # docstatus 1→2 cancellation: only the Clearance JE may exist (for
+        # either direction). Submit / Deposit / Hand Over / Bounce / Return /
+        # workflow-Cancel never post GL, so there is nothing else to reverse.
+        if self.clearance_je:
             cheque_financial.cancel_clearance_je(self)
 
         if self.cheque_type == "Outgoing" and self.cheque_leaf:
@@ -138,17 +137,18 @@ class Cheque(Document):
         # Workflow-driven GL side effects.
         # has_value_changed reads from _doc_before_save — set reliably by
         # the framework before this hook runs, even on workflow saves.
-        if self.cheque_type != "Incoming":
-            return
         if not self.has_value_changed("status"):
             return
 
         old, new = before.status, self.status
 
-        # The ONLY GL transition: Deposited → Cleared posts the Clearance JE.
+        # The only GL transition — direction-aware:
+        #   Incoming: Deposited   → Cleared
+        #   Outgoing: Handed Over → Cleared
         # All other transitions (Bounce, Return, Cancel Cheque) are status-only —
         # nothing was posted on Submit, so there is nothing to reverse.
-        if new == "Cleared" and old == "Deposited":
+        expected_pre_clear = "Deposited" if self.cheque_type == "Incoming" else "Handed Over"
+        if new == "Cleared" and old == expected_pre_clear:
             if not self.cleared_date:
                 frappe.throw(_("Set Cleared Date before marking as Cleared."))
             if not self.bank_account:
@@ -233,6 +233,7 @@ class Cheque(Document):
 
         EVENT_MAP = {
             "Received": "Received", "In Safe": "In Safe", "Deposited": "Deposited",
+            "Handed Over": "Handed Over",
             "Cleared": "Cleared", "Bounced": "Bounced",
             "Returned": "Returned", "Cancelled": "Cancelled", "Replaced": "Replaced",
         }
@@ -329,18 +330,26 @@ class Cheque(Document):
 # to_status) not present here fall through to the per-status validation
 # logic in _validate_transition.
 _TRANSITION_ROLES = {
-    ("Draft", "Received"):      {"Treasury User", "System Manager"},
-    ("Received", "In Safe"):    {"Treasury User", "System Manager"},
-    ("Received", "Deposited"):  {"Treasury User", "System Manager"},
-    ("Received", "Returned"):   {"Treasury User", "System Manager"},
-    ("Received", "Cancelled"):  {"Treasury User", "System Manager"},
-    ("In Safe", "Deposited"):   {"Treasury User", "System Manager"},
-    ("In Safe", "Returned"):    {"Treasury User", "System Manager"},
-    ("In Safe", "Cancelled"):   {"Treasury User", "System Manager"},
-    ("Deposited", "Cleared"):   {"Accounts User", "System Manager"},
-    ("Deposited", "Bounced"):   {"Treasury User", "System Manager"},
-    ("Deposited", "Returned"):  {"Treasury User", "System Manager"},
-    ("Bounced", "Replaced"):    {"Treasury User", "System Manager"},
+    ("Draft", "Received"):         {"Treasury User", "System Manager"},
+    # Incoming-only forwards
+    ("Received", "Deposited"):     {"Treasury User", "System Manager"},
+    ("In Safe", "Deposited"):      {"Treasury User", "System Manager"},
+    ("Deposited", "Cleared"):      {"Accounts User", "System Manager"},
+    ("Deposited", "Bounced"):      {"Treasury User", "System Manager"},
+    ("Deposited", "Returned"):     {"Treasury User", "System Manager"},
+    # Outgoing-only forwards
+    ("Received", "Handed Over"):   {"Treasury User", "System Manager"},
+    ("In Safe", "Handed Over"):    {"Treasury User", "System Manager"},
+    ("Handed Over", "Cleared"):    {"Accounts User", "System Manager"},
+    ("Handed Over", "Bounced"):    {"Treasury User", "System Manager"},
+    ("Handed Over", "Returned"):   {"Treasury User", "System Manager"},
+    # Shared transitions
+    ("Received", "In Safe"):       {"Treasury User", "System Manager"},
+    ("Received", "Returned"):      {"Treasury User", "System Manager"},
+    ("Received", "Cancelled"):     {"Treasury User", "System Manager"},
+    ("In Safe", "Returned"):       {"Treasury User", "System Manager"},
+    ("In Safe", "Cancelled"):      {"Treasury User", "System Manager"},
+    ("Bounced", "Replaced"):       {"Treasury User", "System Manager"},
 }
 
 
@@ -370,7 +379,7 @@ def _validate_transition(doc, new_status: str, notes: str):
                 title=_("Insufficient role for cheque transition"),
             )
 
-    if new_status in ("In Safe", "Deposited"):
+    if new_status in ("In Safe", "Deposited", "Handed Over"):
         if not doc.company or not doc.party or not doc.amount:
             frappe.throw(
                 _("Company, Party, and Amount are required before moving to {0}.").format(
@@ -386,9 +395,20 @@ def _validate_transition(doc, new_status: str, notes: str):
             ),
             frappe.ValidationError,
         )
-    if new_status == "Deposited" and not doc.bank_account:
+    if new_status == "Deposited":
+        if doc.cheque_type != "Incoming":
+            frappe.throw(
+                _("Only Incoming cheques can be Deposited."),
+                frappe.ValidationError,
+            )
+        if not doc.bank_account:
+            frappe.throw(
+                _("Bank Account is required before marking as Deposited."),
+                frappe.ValidationError,
+            )
+    if new_status == "Handed Over" and doc.cheque_type != "Outgoing":
         frappe.throw(
-            _("Bank Account is required before marking as Deposited."),
+            _("Only Outgoing cheques can be Handed Over."),
             frappe.ValidationError,
         )
 

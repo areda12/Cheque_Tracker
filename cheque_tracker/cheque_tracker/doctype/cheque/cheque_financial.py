@@ -1,21 +1,23 @@
 # Copyright (c) 2024, Ahmed Abbas and contributors
 # License: MIT
 """
-Selling-side accounting helpers for Cheque Tracker.
+Cheque Tracker accounting helpers — both directions.
 
-Model: Cheque is the source of truth for in-flight cheques. The ONLY
-GL posting in the cheque lifecycle is the Clearance JE.
+Cheque is the source of truth for in-flight cheques. The ONLY GL
+posting in the lifecycle is the Clearance JE.
 
-  Clearance JE (on workflow Clear, Deposited → Cleared):
-      Dr  Bank GL                            (no party)
-      Cr  Debtors  OR  Advance Received      (party=Customer; ref=SI or SO)
+Incoming (selling side):
+  Clearance JE on workflow Clear (Deposited → Cleared):
+      Dr  Bank GL                          (no party)
+      Cr  Debtors  OR  Advance Received    (party=Customer; ref=SI or SO)
 
-  Submit, Deposit, Bounce, Return, Cancel Cheque are pure status changes
-  with no GL effect — there is nothing to post on Submit and nothing to
-  reverse on Bounce/Return/Cancel.
+Outgoing (buying side):
+  Clearance JE on workflow Clear (Handed Over → Cleared):
+      Dr  Creditors  OR  Advances Paid     (party=Supplier; ref=PI or PO)
+      Cr  Bank GL                          (no party)
 
-Buying side / Outgoing cheques are out of scope here — these helpers
-only fire for cheque_type == "Incoming".
+Submit, Deposit, Hand Over, Bounce, Return, Cancel Cheque are pure
+status changes with no GL effect.
 """
 
 import frappe
@@ -23,7 +25,7 @@ from frappe import _
 
 
 def _resolve_credit_account(cheque):
-    """For Clearance JE: Cr Debtors for SI/no-ref, Cr Advance Received for SO."""
+    """For Incoming Clearance JE — Cr side."""
     if cheque.reference_doctype == "Sales Order":
         adv = frappe.get_cached_value(
             "Company", cheque.company, "default_advance_received_account"
@@ -33,6 +35,20 @@ def _resolve_credit_account(cheque):
         return adv
     return frappe.get_cached_value(
         "Company", cheque.company, "default_receivable_account"
+    )
+
+
+def _resolve_debit_account(cheque):
+    """For Outgoing Clearance JE — Dr side."""
+    if cheque.reference_doctype == "Purchase Order":
+        adv = frappe.get_cached_value(
+            "Company", cheque.company, "default_advance_paid_account"
+        )
+        if not adv:
+            frappe.throw(_("Company has no default Advance Paid account configured."))
+        return adv
+    return frappe.get_cached_value(
+        "Company", cheque.company, "default_payable_account"
     )
 
 
@@ -47,16 +63,12 @@ def _bank_gl_account(cheque):
 
 
 def make_clearance_je(cheque):
-    """Submit the Clearance JE for an Incoming cheque.
-    This is the ONLY GL posting in the cheque lifecycle."""
-    if cheque.cheque_type != "Incoming":
-        return
+    """Submit the Clearance JE. Direction-aware.
+    This is the ONLY GL posting in either cheque lifecycle."""
     if cheque.clearance_je:
         frappe.throw(_("Clearance JE already exists: {0}").format(cheque.clearance_je))
 
     bank_gl = _bank_gl_account(cheque)
-    credit_acc = _resolve_credit_account(cheque)
-    is_so_advance = cheque.reference_doctype == "Sales Order"
 
     je = frappe.new_doc("Journal Entry")
     je.voucher_type = "Bank Entry"
@@ -64,33 +76,60 @@ def make_clearance_je(cheque):
     je.company = cheque.company
     je.cheque_no = cheque.cheque_no
     je.cheque_date = cheque.issue_date
+    direction = "received from" if cheque.cheque_type == "Incoming" else "issued to"
     je.user_remark = (
-        f"Cheque #{cheque.cheque_no} cleared from {cheque.party} "
+        f"Cheque #{cheque.cheque_no} cleared, {direction} {cheque.party} "
         f"for {cheque.reference_doctype or 'no reference'} "
         f"{cheque.reference_name or ''} (Cheque doc: {cheque.name})"
     ).strip()
 
-    # Dr Bank
-    je.append("accounts", {
-        "account": bank_gl,
-        "debit_in_account_currency": cheque.amount,
-        "credit_in_account_currency": 0,
-    })
+    if cheque.cheque_type == "Incoming":
+        # Dr Bank / Cr Debtors|Advance Received
+        credit_acc = _resolve_credit_account(cheque)
+        is_so_advance = cheque.reference_doctype == "Sales Order"
 
-    # Cr Debtors (or Advance Received), with reference to SI / SO
-    cr_row = {
-        "account": credit_acc,
-        "party_type": cheque.party_type,
-        "party": cheque.party,
-        "debit_in_account_currency": 0,
-        "credit_in_account_currency": cheque.amount,
-    }
-    if cheque.reference_doctype and cheque.reference_name:
-        cr_row["reference_type"] = cheque.reference_doctype
-        cr_row["reference_name"] = cheque.reference_name
-    if is_so_advance:
-        cr_row["is_advance"] = "Yes"
-    je.append("accounts", cr_row)
+        je.append("accounts", {
+            "account": bank_gl,
+            "debit_in_account_currency": cheque.amount,
+            "credit_in_account_currency": 0,
+        })
+        cr_row = {
+            "account": credit_acc,
+            "party_type": cheque.party_type,
+            "party": cheque.party,
+            "debit_in_account_currency": 0,
+            "credit_in_account_currency": cheque.amount,
+        }
+        if cheque.reference_doctype and cheque.reference_name:
+            cr_row["reference_type"] = cheque.reference_doctype
+            cr_row["reference_name"] = cheque.reference_name
+        if is_so_advance:
+            cr_row["is_advance"] = "Yes"
+        je.append("accounts", cr_row)
+
+    else:  # Outgoing
+        # Dr Creditors|Advances Paid / Cr Bank
+        debit_acc = _resolve_debit_account(cheque)
+        is_po_advance = cheque.reference_doctype == "Purchase Order"
+
+        dr_row = {
+            "account": debit_acc,
+            "party_type": cheque.party_type,
+            "party": cheque.party,
+            "debit_in_account_currency": cheque.amount,
+            "credit_in_account_currency": 0,
+        }
+        if cheque.reference_doctype and cheque.reference_name:
+            dr_row["reference_type"] = cheque.reference_doctype
+            dr_row["reference_name"] = cheque.reference_name
+        if is_po_advance:
+            dr_row["is_advance"] = "Yes"
+        je.append("accounts", dr_row)
+        je.append("accounts", {
+            "account": bank_gl,
+            "debit_in_account_currency": 0,
+            "credit_in_account_currency": cheque.amount,
+        })
 
     je.flags.ignore_permissions = True
     je.insert()
