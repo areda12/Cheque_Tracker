@@ -6,17 +6,12 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime, today
 
+from cheque_tracker.cheque_tracker.doctype.cheque import cheque_financial
 from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
     mark_leaf_issued,
     release_leaf,
     reserve_leaf,
 )
-
-# Fields that may not be edited once any submitted accounting doc exists
-# bank_account is intentionally excluded: it may be set/changed on submitted cheques
-# (the bank is often unknown at receipt time). Changes are audit-logged via
-# on_update_after_submit instead.
-_PROTECTED_FIELDS = {"amount", "party", "party_type", "company", "cheque_no"}
 
 
 class Cheque(Document):
@@ -38,36 +33,31 @@ class Cheque(Document):
                 frappe.ValidationError,
             )
         self._validate_outgoing_cheque_no()
-        self._protect_fields_if_submitted_accounting_docs()
+
+    def before_submit(self):
+        # Submit transitions Draft → Received and creates the Hand Over JE.
+        # GL postings on the selling side are side effects of Cheque actions.
+        if self.cheque_type == "Incoming":
+            cheque_financial.make_handover_je(self)
+            self.status = "Received"
 
     def on_submit(self):
         if self.cheque_type == "Outgoing":
             self._mark_leaf_issued_on_submit()
-        if self.cheque_type == "Incoming":
-            # For incoming cheques, submitting = physically received.
-            # Actual AR posting happens only via Recording Payment Entry.
-            if self.status in ("Draft",):
-                frappe.db.set_value("Cheque", self.name, "status", "Received")
-                self.status = "Received"
         event_type = "Received" if self.cheque_type == "Incoming" else "Created"
         self._append_event(event_type, notes="Cheque submitted.")
         self._flush_events()
 
     def on_cancel(self):
-        # Block if any submitted accounting docs exist
-        if self._has_submitted_accounting_docs():
-            frappe.throw(
-                _(
-                    "Cannot cancel Cheque {0}: one or more linked accounting documents "
-                    "(Payment Entry / Journal Entry) are still submitted. "
-                    "Cancel those first."
-                ).format(self.name),
-                frappe.ValidationError,
-            )
-        if self.status == "Cleared":
-            frappe.throw(_(
-                "Cannot cancel a Cleared cheque."
-            ), frappe.ValidationError)
+        # Selling side: reverse chain — clearance first, then hand-over.
+        # Cancelling the Hand Over JE auto-reverts SI (Paid → Unpaid) and
+        # decrements SO advance_paid; ERPNext handles those side effects.
+        if self.cheque_type == "Incoming":
+            if self.clearance_je:
+                cheque_financial.cancel_clearance_je(self)
+            if self.handover_je:
+                cheque_financial.cancel_handover_je(self)
+
         if self.cheque_type == "Outgoing" and self.cheque_leaf:
             leaf_status = frappe.db.get_value(
                 "Cheque Leaf", self.cheque_leaf, "leaf_status"
@@ -79,60 +69,16 @@ class Cheque(Document):
                     void_reason=f"Cheque {self.name} cancelled.",
                 )
 
-        # D2: Clean up Draft accounting docs FIRST so that the subsequent
-        # _append_event_and_save (logging the Cancelled event) sees a clean
-        # cheque state. If we logged the event first then deleted the draft
-        # PE, we'd have an event row pointing at a now-deleted PE —
-        # recreating G2-style audit trail issues.
-        #
-        # Submitted (docstatus=1) PEs/JEs are not touched here — they have
-        # their own cancellation hooks in payment_entry_hooks /
-        # journal_entry_hooks, and they are also already blocked above by
-        # _has_submitted_accounting_docs(). Cancelled (docstatus=2) docs
-        # are no-ops.
-        self._delete_draft_if_any("Payment Entry", "recording_payment_entry")
-        self._delete_draft_if_any("Journal Entry", "clearance_journal_entry")
-        self._delete_draft_if_any("Journal Entry", "reversal_journal_entry")
-
         self._append_event("Cancelled", notes="Cheque cancelled.")
         frappe.db.set_value("Cheque", self.name, "status", "Cancelled")
         self._flush_events()
 
-    def _delete_draft_if_any(self, doctype: str, fieldname: str):
-        """
-        If self has a linked accounting doc (PE or JE) and that doc is
-        still in Draft (docstatus=0), delete it and clear the back-link
-        on the cheque. Used by on_cancel to prevent orphan Draft PE/JE
-        from being submitted later against a cancelled cheque.
-        """
-        docname = self.get(fieldname)
-        if not docname:
-            return
-        docstatus = frappe.db.get_value(doctype, docname, "docstatus")
-        if docstatus != 0:
-            # Submitted: blocked above. Cancelled: nothing to clean.
-            return
-        frappe.delete_doc(
-            doctype, docname,
-            ignore_permissions=True,
-            force=True,
-        )
-        frappe.db.set_value("Cheque", self.name, fieldname, None)
-
     def on_update_after_submit(self):
-        """
-        Fires whenever a submitted Cheque is saved (workflow transitions,
-        field edits allowed via allow_on_submit).
-
-        Governance rule: any change to bank_account or cash_account on a
-        live cheque must be logged as an immutable Cheque Event so there
-        is a full audit trail of when and by whom the account was assigned.
-        """
+        """Audit-log allow_on_submit field changes (bank_account, cash_account, clearance_type)."""
         before = self.get_doc_before_save()
         if not before:
             return
 
-        # Audit-log bank_account changes
         old_ba = before.get("bank_account")
         new_ba = self.bank_account
         if old_ba != new_ba:
@@ -148,7 +94,6 @@ class Cheque(Document):
                 )
             self._append_event("Note", notes=notes)
 
-        # Audit-log cash_account changes
         old_ca = before.get("cash_account")
         new_ca = self.cash_account
         if old_ca != new_ca:
@@ -164,7 +109,6 @@ class Cheque(Document):
                 )
             self._append_event("Note", notes=notes)
 
-        # Audit-log clearance_type changes
         old_ct = before.get("clearance_type")
         new_ct = self.clearance_type
         if old_ct != new_ct:
@@ -176,44 +120,38 @@ class Cheque(Document):
         self._flush_events()
 
     # ------------------------------------------------------------------ #
-    #  Field protection                                                    #
+    #  Selling-side actions                                                #
     # ------------------------------------------------------------------ #
 
-    def _protect_fields_if_submitted_accounting_docs(self):
-        """Prevent editing core fields when submitted accounting docs are linked."""
-        if not self.is_new() and self._has_submitted_accounting_docs():
-            changed = self.get_doc_before_save()
-            if not changed:
-                return
-            for field in _PROTECTED_FIELDS:
-                old_val = changed.get(field)
-                new_val = self.get(field)
-                if old_val != new_val:
-                    frappe.throw(
-                        _(
-                            "Cannot modify field '{0}' on Cheque {1} because a submitted "
-                            "accounting document (Payment Entry or Journal Entry) already "
-                            "references it. Cancel the accounting doc first."
-                        ).format(field, self.name),
-                        frappe.ValidationError,
-                    )
+    @frappe.whitelist()
+    def mark_cleared(self, cleared_date, bank_account=None):
+        if self.docstatus != 1:
+            frappe.throw(_("Cheque must be submitted before clearing."))
+        if self.status != "Received":
+            frappe.throw(_("Only Received cheques can be cleared. Current status: {0}").format(self.status))
+        self.cleared_date = cleared_date
+        if bank_account:
+            self.bank_account = bank_account
+        cheque_financial.make_clearance_je(self)
+        self.status = "Cleared"
+        self.flags.ignore_validate_update_after_submit = True
+        self.save(ignore_permissions=True)
 
-    def _has_submitted_accounting_docs(self):
-        """Return True if any submitted PE or JE is linked to this cheque."""
-        checks = [
-            ("Payment Entry", self.recording_payment_entry),
-            ("Journal Entry", self.clearance_journal_entry),
-            ("Journal Entry", self.reversal_journal_entry),
-        ]
-        for doctype, docname in checks:
-            if docname:
-                status = frappe.db.get_value(doctype, docname, "docstatus")
-                if status == 1:
-                    return True
-        return False
+    @frappe.whitelist()
+    def mark_bounced(self, reason=None):
+        if self.docstatus != 1:
+            frappe.throw(_("Cheque must be submitted before bouncing."))
+        if self.status != "Received":
+            frappe.throw(_("Only Received cheques can be bounced. Current status: {0}").format(self.status))
+        cheque_financial.cancel_handover_je(self)
+        if reason:
+            self.remarks = (self.remarks or "") + f"\n[Bounce] {reason}"
+        self.status = "Bounced"
+        self.flags.ignore_validate_update_after_submit = True
+        self.save(ignore_permissions=True)
 
     # ------------------------------------------------------------------ #
-    #  Leaf reservation                                                    #
+    #  Leaf reservation (Outgoing)                                         #
     # ------------------------------------------------------------------ #
 
     def _handle_outgoing_leaf_reservation(self):
@@ -222,7 +160,6 @@ class Cheque(Document):
                 _("Cheque Book is required for Outgoing cheques."),
                 frappe.ValidationError,
             )
-        # Already reserved for THIS cheque — nothing to do
         if self.cheque_leaf:
             current = frappe.db.get_value("Cheque Leaf", self.cheque_leaf, "cheque")
             if current == self.name:
@@ -235,17 +172,11 @@ class Cheque(Document):
                     frappe.ValidationError,
                 )
 
-        # Run reservation as part of the outer save() transaction.
-        # If a later step in before_save raises, Frappe rolls back the
-        # outer transaction and the reservation goes with it.
-        # reserve_leaf itself uses SELECT ... FOR UPDATE for concurrency.
         result = reserve_leaf(self.cheque_book, self.name, frappe.session.user)
-
         self.cheque_leaf = result["name"]
         self.cheque_no   = result["cheque_no"]
 
     def _validate_outgoing_cheque_no(self):
-        """Block any manual override of cheque_no for Outgoing cheques."""
         if self.cheque_type != "Outgoing" or not self.cheque_leaf:
             return
         leaf_no = frappe.db.get_value("Cheque Leaf", self.cheque_leaf, "cheque_no")
@@ -288,7 +219,6 @@ class Cheque(Document):
     # ------------------------------------------------------------------ #
 
     def log_status_change(self, new_status: str, notes: str = ""):
-        """Transition status and append an audit event."""
         old_status = self.status
         updates = {"status": new_status}
         if new_status == "Cleared":
@@ -308,7 +238,6 @@ class Cheque(Document):
         self._flush_events()
 
     def hand_over(self, to_user: str, location: str = "", notes: str = ""):
-        """Transfer physical custody and log a Handed Over event."""
         old_holder = self.current_holder
         frappe.db.set_value(
             "Cheque", self.name,
@@ -353,15 +282,6 @@ class Cheque(Document):
         )
 
     def _flush_events(self):
-        """
-        Persist any in-memory events that have not yet been saved to DB.
-        Re-fetches the doc so we only INSERT genuinely new rows.
-
-        Special handling for docstatus=2 (cancelled): Frappe forbids
-        save() on cancelled docs (check_docstatus_transition), so we
-        write event rows via direct child-doc insert. The audit trail
-        must capture the cancellation event regardless.
-        """
         new_events = [e for e in (self.events or []) if not e.get("name")]
         if not new_events:
             return
@@ -369,8 +289,6 @@ class Cheque(Document):
         persisted = frappe.get_doc("Cheque", self.name)
 
         if persisted.docstatus == 2:
-            # G3: cancelled docs cannot be saved. Direct-insert each
-            # event row so the audit trail is preserved.
             base_idx = (max((e.idx for e in persisted.events), default=0)) + 1
             for i, ev in enumerate(new_events):
                 child = frappe.new_doc("Cheque Event")
@@ -391,12 +309,9 @@ class Cheque(Document):
                 child.db_insert()
             return
 
-        # Normal path (docstatus 0 or 1): save() handles validation
         for ev in new_events:
             persisted.append("events", ev.as_dict())
         persisted.flags.ignore_permissions = True
-        # Required for submitted docs: Frappe blocks child-table changes
-        # after submission unless this flag is set.
         persisted.flags.ignore_validate_update_after_submit = True
         persisted.save()
 
@@ -405,13 +320,10 @@ class Cheque(Document):
 #  Whitelisted API                                                     #
 # ------------------------------------------------------------------ #
 
-# F1: workflow-role gating for change_cheque_status. Mirrors
-# Cheque Workflow.transitions[].allowed in fixtures/workflow.json,
-# with System Manager always permitted. Pairs (from_status, to_status)
-# not present here fall through to the per-status validation logic
-# in _validate_transition (or to the Select-field constraint).
+# Workflow-role gating for change_cheque_status. Pairs (from_status,
+# to_status) not present here fall through to the per-status validation
+# logic in _validate_transition.
 _TRANSITION_ROLES = {
-    # (from_status, to_status): allowed roles
     ("Draft", "Received"):      {"Treasury User", "System Manager"},
     ("Received", "In Safe"):    {"Treasury User", "System Manager"},
     ("Received", "Deposited"):  {"Treasury User", "System Manager"},
@@ -421,10 +333,7 @@ _TRANSITION_ROLES = {
     ("In Safe", "Returned"):    {"Treasury User", "System Manager"},
     ("In Safe", "Cancelled"):   {"Treasury User", "System Manager"},
     ("Deposited", "Presented"): {"Treasury User", "System Manager"},
-    # Dead-letter rows (blocked by E2 + JE-submit gating, listed for completeness):
-    ("Deposited", "Cleared"):   {"Accounts User", "System Manager"},
     ("Deposited", "Bounced"):   {"Treasury User", "System Manager"},
-    ("Presented", "Cleared"):   {"Accounts User", "System Manager"},
     ("Presented", "Bounced"):   {"Treasury User", "System Manager"},
     ("Bounced", "Replaced"):    {"Treasury User", "System Manager"},
 }
@@ -432,7 +341,11 @@ _TRANSITION_ROLES = {
 
 @frappe.whitelist()
 def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
-    """Workflow / UI transition endpoint (non-financial status changes)."""
+    """Workflow / UI transition endpoint (non-financial status changes).
+
+    Selling-side Cleared / Bounced go through Cheque.mark_cleared /
+    Cheque.mark_bounced and are blocked here.
+    """
     doc = frappe.get_doc("Cheque", cheque_name)
     frappe.has_permission("Cheque", "write", doc=doc, throw=True)
     _validate_transition(doc, new_status, notes)
@@ -441,24 +354,6 @@ def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
 
 
 def _validate_transition(doc, new_status: str, notes: str):
-    # E2: bidirectional guard on Cleared. The forward direction (entering
-    # Cleared) is blocked further down — clearance must come from the JE
-    # submit hook. The reverse direction is blocked here so the cheque
-    # state cannot drift away from a still-submitted clearance JE.
-    if doc.status == "Cleared" and new_status != "Cleared":
-        frappe.throw(
-            _(
-                "Cheque is Cleared. Cancel the Clearance Journal Entry "
-                "to revert this status."
-            ),
-            frappe.ValidationError,
-            title=_("Cleared cheques cannot be transitioned manually"),
-        )
-
-    # F1: gate the transition by workflow role. Mirrors
-    # Cheque Workflow.transitions[].allowed (fixtures/workflow.json) plus
-    # System Manager always allowed. Unknown transitions fall through to
-    # the per-status logic / Select-field validation below.
     allowed_roles = _TRANSITION_ROLES.get((doc.status, new_status))
     if allowed_roles is not None:
         user_roles = set(frappe.get_roles(frappe.session.user))
@@ -482,7 +377,6 @@ def _validate_transition(doc, new_status: str, notes: str):
                 ),
                 frappe.ValidationError,
             )
-    # Cash flow: block Deposited/Presented since these are deposit-only statuses
     if doc.clearance_type == "Cash" and new_status in ("Deposited", "Presented"):
         frappe.throw(
             _("Cannot mark as {0} when Clearance Type is Cash. "
@@ -496,27 +390,18 @@ def _validate_transition(doc, new_status: str, notes: str):
             _("Bank Account is required before marking as Deposited."),
             frappe.ValidationError,
         )
-    if new_status == "Bounced" and not notes:
-        frappe.throw(
-            _("Notes / reason are required when marking a cheque as Bounced."),
-            frappe.ValidationError,
-        )
     if new_status == "Cleared":
-        # Clearance must go through the JE hook
         frappe.throw(
-            _("Cheque cannot be manually set to Cleared. "
-              "Submit the Clearance Journal Entry instead."),
+            _("Use the 'Mark Cleared' action — it submits the Clearance JE and "
+              "transitions the cheque atomically."),
             frappe.ValidationError,
         )
-    if new_status == "Cleared" and doc.status == "Cancelled":
-        frappe.throw(_("Cannot clear a cancelled cheque."), frappe.ValidationError)
-    if new_status == "Cancelled":
-        if doc._has_submitted_accounting_docs():
-            frappe.throw(
-                _("Cannot cancel Cheque {0}: submitted accounting documents exist. "
-                  "Cancel those first.").format(doc.name),
-                frappe.ValidationError,
-            )
+    if new_status == "Bounced":
+        frappe.throw(
+            _("Use the 'Mark Bounced' action — it cancels the Hand Over JE and "
+              "transitions the cheque atomically."),
+            frappe.ValidationError,
+        )
 
 
 @frappe.whitelist()
