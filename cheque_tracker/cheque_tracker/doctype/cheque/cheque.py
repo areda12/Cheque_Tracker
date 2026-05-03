@@ -72,17 +72,32 @@ class Cheque(Document):
         if self.clearance_je:
             cheque_financial.cancel_clearance_je(self)
 
-        # If this cheque was Replaced, unlink the still-Draft replacement so
-        # it doesn't carry a dangling pointer to a now-cancelled original.
-        # Submitted/cancelled replacements aren't safe to mutate here; leaving
-        # them stale is acceptable (rare edge case, audit trail intact).
+        # Replace-chain partners point at each other via replacement_cheque /
+        # original_cheque. Frappe's check_no_back_links_exist would block the
+        # cancel — bypass it; we handle audit-chain integrity below.
+        self.flags.ignore_links = True
+
+        # Proactively clear the partner's pointer so reports don't show a
+        # dangling link to a cancelled cheque. db_set bypasses docstatus
+        # checks for submitted partners.
         if self.replacement_cheque:
             try:
                 replacement = frappe.get_doc("Cheque", self.replacement_cheque)
-                if replacement.docstatus == 0:
-                    replacement.original_cheque = None
-                    replacement.flags.ignore_permissions = True
-                    replacement.save()
+                if replacement.original_cheque == self.name:
+                    if replacement.docstatus == 0:
+                        replacement.original_cheque = None
+                        replacement.flags.ignore_permissions = True
+                        replacement.save()
+                    else:
+                        replacement.db_set("original_cheque", None, update_modified=False)
+            except frappe.DoesNotExistError:
+                pass
+
+        if self.original_cheque:
+            try:
+                original = frappe.get_doc("Cheque", self.original_cheque)
+                if original.replacement_cheque == self.name:
+                    original.db_set("replacement_cheque", None, update_modified=False)
             except frappe.DoesNotExistError:
                 pass
 
