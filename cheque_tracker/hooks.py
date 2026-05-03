@@ -37,7 +37,7 @@ fixtures = [
                     "Receive",
                     "Move to Safe",
                     "Deposit",
-                    "Present",
+                    "Hand Over",
                     "Clear",
                     "Bounce",
                     "Return",
@@ -105,24 +105,14 @@ scheduler_events = {
 # Frappe calls Document class methods automatically — registering them
 # again here via doc_events would fire them TWICE, producing duplicate
 # Cheque Events. They are intentionally absent from this dict.
+#
+# Selling-side accounting is now JE-only and Cheque-doc-driven (Cheque
+# actions create/cancel JEs as side effects), so Payment Entry and
+# Journal Entry no longer need doc_event hooks here.
 doc_events = {
     "Cheque Book": {
         "on_submit": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_submit",
         "on_cancel": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_cancel",
-    },
-    # ---------------------------------------------------------------
-    # Payment Entry: sync cheque status when recording PE is submitted/cancelled
-    # ---------------------------------------------------------------
-    "Payment Entry": {
-        "on_submit": "cheque_tracker.cheque_tracker.hooks.payment_entry_hooks.payment_entry_on_submit",
-        "on_cancel": "cheque_tracker.cheque_tracker.hooks.payment_entry_hooks.payment_entry_on_cancel",
-    },
-    # ---------------------------------------------------------------
-    # Journal Entry: sync cheque status for clearance & bounce JEs
-    # ---------------------------------------------------------------
-    "Journal Entry": {
-        "on_submit": "cheque_tracker.cheque_tracker.hooks.journal_entry_hooks.journal_entry_on_submit",
-        "on_cancel": "cheque_tracker.cheque_tracker.hooks.journal_entry_hooks.journal_entry_on_cancel",
     },
 }
 

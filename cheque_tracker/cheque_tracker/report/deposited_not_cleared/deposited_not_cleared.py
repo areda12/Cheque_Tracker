@@ -30,7 +30,7 @@ def get_columns():
 
 
 def get_data(filters):
-    conds  = ["status IN ('Deposited','Presented')", "docstatus = 1"]
+    conds  = ["status = 'Deposited'", "docstatus = 1"]
     values = {}
 
     if filters.get("company"):

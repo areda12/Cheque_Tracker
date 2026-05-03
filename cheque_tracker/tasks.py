@@ -13,7 +13,7 @@ from frappe.utils import today
 def auto_update_cheque_statuses():
     """
     Daily job:
-    1. Log a warning for every Deposited/Presented cheque whose due_date has passed.
+    1. Log a warning for every Deposited cheque whose due_date has passed.
     2. Refresh leaf counters on Active Cheque Books.
 
     Does NOT auto-transition statuses – that requires human confirmation.
@@ -23,7 +23,7 @@ def auto_update_cheque_statuses():
     overdue = frappe.get_all(
         "Cheque",
         filters={
-            "status": ["in", ["Deposited", "Presented"]],
+            "status": ["in", ["Deposited"]],
             "due_date": ["<", today()],
             "docstatus": 1,
         },

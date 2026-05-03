@@ -5,9 +5,9 @@ cheque_tracker.STATUS_COLORS = {
     "Draft":     "grey",
     "Received":  "blue",
     "In Safe":   "purple",
-    "Deposited": "yellow",
-    "Presented": "orange",
-    "Cleared":   "green",
+    "Deposited":   "yellow",
+    "Handed Over": "yellow",
+    "Cleared":     "green",
     "Bounced":   "red",
     "Returned":  "red",
     "Cancelled": "darkgrey",
@@ -102,32 +102,45 @@ frappe.ui.form.on("Cheque", {
 
             // ── Status transitions ─────────────────────────────────────
             const s = frm.doc.status;
+            const incoming = frm.doc.cheque_type === "Incoming";
+            const outgoing = frm.doc.cheque_type === "Outgoing";
             const tu = frappe.user.has_role(["Treasury User", "System Manager"]);
             const au = frappe.user.has_role(["Accounts User", "System Manager"]);
 
             if (tu && s === "Received") {
                 frm.add_custom_button(__("Move to Safe"), () =>
                     cheque_tracker._transition(frm, "In Safe"), __("Actions"));
-                frm.add_custom_button(__("Deposit"), () =>
-                    cheque_tracker._transition(frm, "Deposited"), __("Actions"));
+                if (incoming) {
+                    frm.add_custom_button(__("Deposit"), () =>
+                        cheque_tracker._transition(frm, "Deposited"), __("Actions"));
+                }
+                if (outgoing) {
+                    frm.add_custom_button(__("Hand Over"), () =>
+                        cheque_tracker._transition(frm, "Handed Over"), __("Actions"));
+                }
                 frm.add_custom_button(__("Return"), () =>
                     cheque_tracker._transition(frm, "Returned", true), __("Actions"));
             }
             if (tu && s === "In Safe") {
-                frm.add_custom_button(__("Deposit"), () =>
-                    cheque_tracker._transition(frm, "Deposited"), __("Actions"));
+                if (incoming) {
+                    frm.add_custom_button(__("Deposit"), () =>
+                        cheque_tracker._transition(frm, "Deposited"), __("Actions"));
+                }
+                if (outgoing) {
+                    frm.add_custom_button(__("Hand Over"), () =>
+                        cheque_tracker._transition(frm, "Handed Over"), __("Actions"));
+                }
                 frm.add_custom_button(__("Return"), () =>
                     cheque_tracker._transition(frm, "Returned", true), __("Actions"));
             }
-            if (tu && (s === "Deposited" || s === "Presented")) {
+            const pre_clear = incoming ? "Deposited" : "Handed Over";
+            if (tu && s === pre_clear) {
                 frm.add_custom_button(__("Bounce"), () =>
                     cheque_tracker._transition(frm, "Bounced", true), __("Actions"));
+                frm.add_custom_button(__("Return"), () =>
+                    cheque_tracker._transition(frm, "Returned", true), __("Actions"));
             }
-            if (tu && s === "Deposited") {
-                frm.add_custom_button(__("Present"), () =>
-                    cheque_tracker._transition(frm, "Presented"), __("Actions"));
-            }
-            if (au && (s === "Deposited" || s === "Presented")) {
+            if (au && s === pre_clear) {
                 frm.add_custom_button(__("Clear"), () =>
                     cheque_tracker._transition(frm, "Cleared"), __("Actions"));
             }

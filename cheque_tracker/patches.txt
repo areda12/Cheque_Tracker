@@ -1,3 +1,7 @@
 cheque_tracker.patches.v1_0.add_unique_constraint_cheque_leaf
 cheque_tracker.patches.v1_1.add_financial_posting_fields
 cheque_tracker.patches.v1_2.clear_cheque_event_dynamic_links
+cheque_tracker.patches.v2_0.remove_legacy_cheque_fields
+cheque_tracker.patches.v2_1.align_cheque_workflow
+cheque_tracker.patches.v3_0.drop_handover_je_field
+cheque_tracker.patches.v3_1.add_outgoing_workflow
