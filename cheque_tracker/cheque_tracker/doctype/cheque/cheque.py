@@ -19,10 +19,21 @@ class Cheque(Document):
     #  Life-cycle hooks (wired via doc_events in hooks.py)                #
     # ------------------------------------------------------------------ #
 
+    def before_insert(self):
+        # Initialise current_holder during insert so it lands in the same
+        # row write as the rest of the doc — no post-insert UPDATE that
+        # would bump `modified` and desync the in-memory doc.
+        if not self.current_holder:
+            self.current_holder = frappe.session.user
+
     def after_insert(self):
+        # Append the Created event (needs the assigned name), then
+        # reload to resync the in-memory `modified` with the row that
+        # _flush_events just persisted. Without the reload, a subsequent
+        # submit() in the same Python flow throws TimestampMismatchError.
         self._append_event("Created", notes=f"Cheque {self.name} created.")
-        frappe.db.set_value("Cheque", self.name, "current_holder", frappe.session.user)
         self._flush_events()
+        self.reload()
 
     def before_save(self):
         if self.cheque_type == "Outgoing":
@@ -48,8 +59,45 @@ class Cheque(Document):
         self._append_event(event_type, notes="Cheque submitted.")
         self._flush_events()
 
+    def on_update(self):
+        """React to workflow-driven status transitions on submitted cheques.
+
+        The Cheque Workflow drives every status change via doc.save(); this
+        hook detects the transition with get_doc_before_save() and fires
+        the matching GL side effect. Only Incoming cheques are handled
+        here — Outgoing/buying side is out of scope.
+        """
+        if self.is_new() or self.cheque_type != "Incoming":
+            return
+        before = self.get_doc_before_save()
+        if not before or before.status == self.status:
+            return
+
+        old = before.status
+        new = self.status
+
+        # Cleared: only legal source per workflow is Deposited
+        if new == "Cleared" and old == "Deposited":
+            if not self.cleared_date:
+                frappe.throw(_("Set Cleared Date before marking as Cleared."))
+            if not self.bank_account:
+                frappe.throw(_("Set Bank Account before marking as Cleared."))
+            cheque_financial.make_clearance_je(self)
+
+        # Bounced: only legal source per workflow is Deposited
+        elif new == "Bounced" and old == "Deposited":
+            cheque_financial.cancel_handover_je(self)
+
+        # Returned: from Received, In Safe, or Deposited — undo Hand Over JE
+        elif new == "Returned" and old in ("Received", "In Safe", "Deposited"):
+            cheque_financial.cancel_handover_je(self)
+
+        # Cancelled (workflow action, NOT docstatus cancel) — undo Hand Over JE
+        elif new == "Cancelled" and old in ("Received", "In Safe"):
+            cheque_financial.cancel_handover_je(self)
+
     def on_cancel(self):
-        # Selling side: reverse chain — clearance first, then hand-over.
+        # docstatus 1→2 cancellation: reverse chain — clearance first, then hand-over.
         # Cancelling the Hand Over JE auto-reverts SI (Paid → Unpaid) and
         # decrements SO advance_paid; ERPNext handles those side effects.
         if self.cheque_type == "Incoming":
@@ -118,37 +166,6 @@ class Cheque(Document):
             )
 
         self._flush_events()
-
-    # ------------------------------------------------------------------ #
-    #  Selling-side actions                                                #
-    # ------------------------------------------------------------------ #
-
-    @frappe.whitelist()
-    def mark_cleared(self, cleared_date, bank_account=None):
-        if self.docstatus != 1:
-            frappe.throw(_("Cheque must be submitted before clearing."))
-        if self.status != "Received":
-            frappe.throw(_("Only Received cheques can be cleared. Current status: {0}").format(self.status))
-        self.cleared_date = cleared_date
-        if bank_account:
-            self.bank_account = bank_account
-        cheque_financial.make_clearance_je(self)
-        self.status = "Cleared"
-        self.flags.ignore_validate_update_after_submit = True
-        self.save(ignore_permissions=True)
-
-    @frappe.whitelist()
-    def mark_bounced(self, reason=None):
-        if self.docstatus != 1:
-            frappe.throw(_("Cheque must be submitted before bouncing."))
-        if self.status != "Received":
-            frappe.throw(_("Only Received cheques can be bounced. Current status: {0}").format(self.status))
-        cheque_financial.cancel_handover_je(self)
-        if reason:
-            self.remarks = (self.remarks or "") + f"\n[Bounce] {reason}"
-        self.status = "Bounced"
-        self.flags.ignore_validate_update_after_submit = True
-        self.save(ignore_permissions=True)
 
     # ------------------------------------------------------------------ #
     #  Leaf reservation (Outgoing)                                         #
@@ -228,7 +245,7 @@ class Cheque(Document):
 
         EVENT_MAP = {
             "Received": "Received", "In Safe": "In Safe", "Deposited": "Deposited",
-            "Presented": "Presented", "Cleared": "Cleared", "Bounced": "Bounced",
+            "Cleared": "Cleared", "Bounced": "Bounced",
             "Returned": "Returned", "Cancelled": "Cancelled", "Replaced": "Replaced",
         }
         self._append_event(
@@ -332,20 +349,16 @@ _TRANSITION_ROLES = {
     ("In Safe", "Deposited"):   {"Treasury User", "System Manager"},
     ("In Safe", "Returned"):    {"Treasury User", "System Manager"},
     ("In Safe", "Cancelled"):   {"Treasury User", "System Manager"},
-    ("Deposited", "Presented"): {"Treasury User", "System Manager"},
+    ("Deposited", "Cleared"):   {"Accounts User", "System Manager"},
     ("Deposited", "Bounced"):   {"Treasury User", "System Manager"},
-    ("Presented", "Bounced"):   {"Treasury User", "System Manager"},
+    ("Deposited", "Returned"):  {"Treasury User", "System Manager"},
     ("Bounced", "Replaced"):    {"Treasury User", "System Manager"},
 }
 
 
 @frappe.whitelist()
 def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
-    """Workflow / UI transition endpoint (non-financial status changes).
-
-    Selling-side Cleared / Bounced go through Cheque.mark_cleared /
-    Cheque.mark_bounced and are blocked here.
-    """
+    """Workflow / UI transition endpoint (non-financial status changes)."""
     doc = frappe.get_doc("Cheque", cheque_name)
     frappe.has_permission("Cheque", "write", doc=doc, throw=True)
     _validate_transition(doc, new_status, notes)
@@ -369,7 +382,7 @@ def _validate_transition(doc, new_status: str, notes: str):
                 title=_("Insufficient role for cheque transition"),
             )
 
-    if new_status in ("In Safe", "Deposited", "Presented"):
+    if new_status in ("In Safe", "Deposited"):
         if not doc.company or not doc.party or not doc.amount:
             frappe.throw(
                 _("Company, Party, and Amount are required before moving to {0}.").format(
@@ -377,7 +390,7 @@ def _validate_transition(doc, new_status: str, notes: str):
                 ),
                 frappe.ValidationError,
             )
-    if doc.clearance_type == "Cash" and new_status in ("Deposited", "Presented"):
+    if doc.clearance_type == "Cash" and new_status == "Deposited":
         frappe.throw(
             _("Cannot mark as {0} when Clearance Type is Cash. "
               "Cash cheques go directly from In Safe → Cleared via the clearance entry.").format(
@@ -388,18 +401,6 @@ def _validate_transition(doc, new_status: str, notes: str):
     if new_status == "Deposited" and not doc.bank_account:
         frappe.throw(
             _("Bank Account is required before marking as Deposited."),
-            frappe.ValidationError,
-        )
-    if new_status == "Cleared":
-        frappe.throw(
-            _("Use the 'Mark Cleared' action — it submits the Clearance JE and "
-              "transitions the cheque atomically."),
-            frappe.ValidationError,
-        )
-    if new_status == "Bounced":
-        frappe.throw(
-            _("Use the 'Mark Bounced' action — it cancels the Hand Over JE and "
-              "transitions the cheque atomically."),
             frappe.ValidationError,
         )
 

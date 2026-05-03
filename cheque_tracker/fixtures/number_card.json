@@ -10,7 +10,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
     "color": "#449CF0",
     "doctype": "Number Card"
   },
@@ -25,7 +25,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
     "color": "#449CF0",
     "doctype": "Number Card"
   },
@@ -70,7 +70,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
     "color": "#FFA00A",
     "doctype": "Number Card"
   },
@@ -85,7 +85,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
     "color": "#FFA00A",
     "doctype": "Number Card"
   },
@@ -100,7 +100,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
     "color": "#E24C4C",
     "doctype": "Number Card"
   },
@@ -115,7 +115,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
     "color": "#E24C4C",
     "doctype": "Number Card"
   },
@@ -131,7 +131,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 0,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
     "color": "#7575FF",
     "doctype": "Number Card"
   },
@@ -147,7 +147,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 0,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\", \"Presented\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
     "color": "#7575FF",
     "doctype": "Number Card"
   }

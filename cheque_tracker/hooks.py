@@ -37,7 +37,6 @@ fixtures = [
                     "Receive",
                     "Move to Safe",
                     "Deposit",
-                    "Present",
                     "Clear",
                     "Bounce",
                     "Return",

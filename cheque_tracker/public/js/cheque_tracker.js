@@ -6,7 +6,6 @@ cheque_tracker.STATUS_COLORS = {
     "Received":  "blue",
     "In Safe":   "purple",
     "Deposited": "yellow",
-    "Presented": "orange",
     "Cleared":   "green",
     "Bounced":   "red",
     "Returned":  "red",
@@ -119,15 +118,13 @@ frappe.ui.form.on("Cheque", {
                 frm.add_custom_button(__("Return"), () =>
                     cheque_tracker._transition(frm, "Returned", true), __("Actions"));
             }
-            if (tu && (s === "Deposited" || s === "Presented")) {
+            if (tu && s === "Deposited") {
                 frm.add_custom_button(__("Bounce"), () =>
                     cheque_tracker._transition(frm, "Bounced", true), __("Actions"));
+                frm.add_custom_button(__("Return"), () =>
+                    cheque_tracker._transition(frm, "Returned", true), __("Actions"));
             }
-            if (tu && s === "Deposited") {
-                frm.add_custom_button(__("Present"), () =>
-                    cheque_tracker._transition(frm, "Presented"), __("Actions"));
-            }
-            if (au && (s === "Deposited" || s === "Presented")) {
+            if (au && s === "Deposited") {
                 frm.add_custom_button(__("Clear"), () =>
                     cheque_tracker._transition(frm, "Cleared"), __("Actions"));
             }
