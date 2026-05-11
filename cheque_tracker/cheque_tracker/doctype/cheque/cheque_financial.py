@@ -139,6 +139,55 @@ def make_clearance_je(cheque):
     return je.name
 
 
+def validate_replacement_candidate(original, replacement):
+    """Validate that ``replacement`` is a legitimate replacement for
+    ``original``. Throws frappe.ValidationError on hard failures; emits
+    frappe.msgprint warnings on soft failures."""
+
+    if replacement.name == original.name:
+        frappe.throw(_("A cheque cannot replace itself."))
+
+    if replacement.docstatus != 0:
+        frappe.throw(_("Replacement cheque must be in Draft state, not {0}.").format(
+            {0: "Draft", 1: "Submitted", 2: "Cancelled"}[replacement.docstatus]
+        ))
+
+    if replacement.cheque_type != original.cheque_type:
+        frappe.throw(_("Replacement must be the same cheque type ({0}).").format(
+            original.cheque_type
+        ))
+
+    if (replacement.party_type != original.party_type
+            or replacement.party != original.party):
+        frappe.throw(_("Replacement must be from/to the same party: {0} {1}.").format(
+            original.party_type, original.party
+        ))
+
+    if (replacement.reference_doctype != original.reference_doctype
+            or replacement.reference_name != original.reference_name):
+        frappe.throw(_("Replacement must reference the same {0}: {1}.").format(
+            original.reference_doctype or "(no reference)",
+            original.reference_name or "(no reference)",
+        ))
+
+    if replacement.original_cheque:
+        frappe.throw(_("Cheque {0} is already marked as a replacement for {1}.").format(
+            replacement.name, replacement.original_cheque
+        ))
+
+    # Soft warning: amount mismatch is allowed (bank fees, partial replacement)
+    # but worth surfacing.
+    if replacement.amount != original.amount:
+        frappe.msgprint(
+            _("Note: replacement amount ({0}) differs from original ({1}). "
+              "Continuing — verify this is intentional.").format(
+                replacement.amount, original.amount
+            ),
+            indicator="orange",
+            alert=True,
+        )
+
+
 def cancel_clearance_je(cheque):
     if not cheque.clearance_je:
         return

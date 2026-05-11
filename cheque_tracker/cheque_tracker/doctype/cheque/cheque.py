@@ -72,6 +72,35 @@ class Cheque(Document):
         if self.clearance_je:
             cheque_financial.cancel_clearance_je(self)
 
+        # Replace-chain partners point at each other via replacement_cheque /
+        # original_cheque. Frappe's check_no_back_links_exist would block the
+        # cancel — bypass it; we handle audit-chain integrity below.
+        self.flags.ignore_links = True
+
+        # Proactively clear the partner's pointer so reports don't show a
+        # dangling link to a cancelled cheque. db_set bypasses docstatus
+        # checks for submitted partners.
+        if self.replacement_cheque:
+            try:
+                replacement = frappe.get_doc("Cheque", self.replacement_cheque)
+                if replacement.original_cheque == self.name:
+                    if replacement.docstatus == 0:
+                        replacement.original_cheque = None
+                        replacement.flags.ignore_permissions = True
+                        replacement.save()
+                    else:
+                        replacement.db_set("original_cheque", None, update_modified=False)
+            except frappe.DoesNotExistError:
+                pass
+
+        if self.original_cheque:
+            try:
+                original = frappe.get_doc("Cheque", self.original_cheque)
+                if original.replacement_cheque == self.name:
+                    original.db_set("replacement_cheque", None, update_modified=False)
+            except frappe.DoesNotExistError:
+                pass
+
         if self.cheque_type == "Outgoing" and self.cheque_leaf:
             leaf_status = frappe.db.get_value(
                 "Cheque Leaf", self.cheque_leaf, "leaf_status"
@@ -257,6 +286,90 @@ class Cheque(Document):
             notes=notes,
         )
         self._flush_events()
+
+    # ------------------------------------------------------------------ #
+    #  Replacement (Bounced → Replaced)                                    #
+    # ------------------------------------------------------------------ #
+
+    @frappe.whitelist()
+    def link_replacement(self, replacement_name):
+        """Link an existing Draft Cheque as the replacement for this Bounced
+        cheque, then transition this cheque's status to Replaced via the
+        workflow."""
+        self._validate_can_be_replaced()
+
+        replacement = frappe.get_doc("Cheque", replacement_name)
+        cheque_financial.validate_replacement_candidate(self, replacement)
+
+        replacement.original_cheque = self.name
+        replacement.flags.ignore_permissions = True
+        replacement.save()
+
+        self.replacement_cheque = replacement.name
+        self.flags.ignore_validate_update_after_submit = True
+        self.save(ignore_permissions=True)
+
+        from frappe.model.workflow import apply_workflow
+        apply_workflow(self, "Replace")
+        return replacement.name
+
+    @frappe.whitelist()
+    def create_replacement(self, cheque_no, issue_date, due_date,
+                           drawee_bank=None, cheque_book=None,
+                           cheque_leaf=None, amount=None):
+        """Create a new Draft Cheque pre-filled from this Bounced cheque,
+        link it bidirectionally, and apply the Replace workflow action.
+        Returns the new draft's name."""
+        self._validate_can_be_replaced()
+
+        replacement = frappe.new_doc("Cheque")
+        replacement.cheque_type = self.cheque_type
+        replacement.company = self.company
+        replacement.party_type = self.party_type
+        replacement.party = self.party
+        replacement.amount = amount if amount is not None else self.amount
+        replacement.currency = self.currency
+        replacement.cheque_no = cheque_no
+        replacement.issue_date = issue_date
+        replacement.received_date = issue_date
+        replacement.due_date = due_date
+        replacement.drawee_bank = drawee_bank or self.drawee_bank
+        replacement.drawer_name = self.drawer_name
+        replacement.bank_account = self.bank_account
+        replacement.reference_doctype = self.reference_doctype
+        replacement.reference_name = self.reference_name
+        replacement.original_cheque = self.name
+
+        if self.cheque_type == "Outgoing":
+            if not cheque_book or not cheque_leaf:
+                frappe.throw(_(
+                    "Cheque Book and Leaf are required for Outgoing replacements."
+                ))
+            replacement.cheque_book = cheque_book
+            replacement.cheque_leaf = cheque_leaf
+
+        replacement.flags.ignore_permissions = True
+        replacement.insert()
+
+        self.replacement_cheque = replacement.name
+        self.flags.ignore_validate_update_after_submit = True
+        self.save(ignore_permissions=True)
+
+        from frappe.model.workflow import apply_workflow
+        apply_workflow(self, "Replace")
+        return replacement.name
+
+    def _validate_can_be_replaced(self):
+        if self.docstatus != 1:
+            frappe.throw(_("Cheque must be submitted to be replaced."))
+        if self.status != "Bounced":
+            frappe.throw(_(
+                "Only Bounced cheques can be replaced. Current status: {0}"
+            ).format(self.status))
+        if self.replacement_cheque:
+            frappe.throw(_(
+                "Cheque {0} has already been replaced by {1}."
+            ).format(self.name, self.replacement_cheque))
 
     # ------------------------------------------------------------------ #
     #  Event helpers                                                       #

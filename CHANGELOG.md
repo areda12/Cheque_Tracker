@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## v1.1.5 — Replace workflow with bidirectional audit chain (2026-05-11)
+
+### Workflow
+- New **Replace** flow on `Bounced` cheques links the bounced cheque to its replacement (or creates a new draft pre-filled from the bounced one), then applies the workflow transition to `Replaced`.
+- Two new Link fields on Cheque: `replacement_cheque` (set on the bounced cheque) and `original_cheque` (set on the replacement). Both read-only — populated only via the Replace action handler.
+
+### Server (`cheque.py`, `cheque_financial.py`)
+- New whitelisted methods on the Cheque controller: `link_replacement(replacement_name)` and `create_replacement(cheque_no, issue_date, due_date, …)`. Both apply the Workflow `Replace` action atomically with the linking.
+- New `validate_replacement_candidate(original, replacement)` helper enforces hard constraints (same `cheque_type`, same party, same `reference_doctype` + `reference_name`, replacement must be Draft, replacement not already linked) and emits a soft warning on amount mismatch.
+- `on_cancel` now sets `flags.ignore_links = True` and proactively clears the partner cheque's pointer (Draft partner: normal save; submitted/cancelled partner: `db_set`), so cancelling either side of a Replace chain no longer trips Frappe's `check_no_back_links_exist`.
+
+### Client (`cheque.js`)
+- Wraps the workflow's **Replace** button with a dialog offering two paths: *Create New* (pre-fills party / amount / reference / currency / drawee_bank from the bounced cheque; requires Cheque Book + Leaf for Outgoing) or *Link Existing Draft* (filtered by same type / party / reference).
+- New quick-view buttons: **View Replacement** and **View Original (Replaced)** when the corresponding Link is populated.
+- Pre-Clear dialog wrapper now also fires for Outgoing cheques in the `Handed Over` state (was Incoming-only).
+
+### Notes
+- No GL effect from Replace — the bounced cheque never posted under the clearance-only model, and the replacement does its own GL when it clears. Replace exists purely for audit-chain bookkeeping.
+
 ## v1.1.4 — Filters, UX & Cash Clearance (2025-03-02)
 
 ### Client-side filters & UX improvements (`cheque.js`)
