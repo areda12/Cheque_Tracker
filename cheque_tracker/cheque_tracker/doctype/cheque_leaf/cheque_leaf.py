@@ -21,6 +21,28 @@ class ChequeLeaf(Document):
                 frappe.ValidationError,
             )
 
+    def on_update(self):
+        """Catch manual edits to leaf_status made through the desk form.
+
+        Bulk generation sets `skip_counter_refresh` and refreshes once at the
+        end instead of once per leaf (§3.2.8).
+        """
+        if self.flags.get("skip_counter_refresh"):
+            return
+        _refresh_counters(self.cheque_book)
+
+    def on_trash(self):
+        _refresh_counters(self.cheque_book)
+
+
+def _refresh_counters(cheque_book: str):
+    """Local import keeps cheque_book.py free of a cheque_leaf import cycle."""
+    from cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book import (
+        refresh_book_counters,
+    )
+
+    refresh_book_counters(cheque_book)
+
 
 # ─────────────────────────────────────────────────────────────────── #
 #  Concurrency-safe leaf reservation                                   #
@@ -95,11 +117,16 @@ def reserve_leaf(cheque_book: str, cheque_name: str, user: str) -> dict:
             frappe.ValidationError,
         )
 
+    # These helpers write with frappe.db.set_value / raw SQL, which bypass the
+    # ORM and therefore ChequeLeaf.on_update — refresh explicitly (§3.2.8).
+    _refresh_counters(cheque_book)
+
     return {"name": leaf.name, "cheque_no": leaf.cheque_no}
 
 
 def release_leaf(leaf_name: str, status: str = "Voided", void_reason: str = ""):
     """Set a Reserved or Issued leaf to Voided / Cancelled."""
+    cheque_book = frappe.db.get_value("Cheque Leaf", leaf_name, "cheque_book")
     frappe.db.set_value(
         "Cheque Leaf",
         leaf_name,
@@ -111,10 +138,12 @@ def release_leaf(leaf_name: str, status: str = "Voided", void_reason: str = ""):
             "reserved_on":  None,
         },
     )
+    _refresh_counters(cheque_book)
 
 
 def mark_leaf_issued(leaf_name: str):
     """Transition a Reserved leaf to Issued."""
+    cheque_book = frappe.db.get_value("Cheque Leaf", leaf_name, "cheque_book")
     frappe.db.set_value(
         "Cheque Leaf",
         leaf_name,
@@ -123,3 +152,4 @@ def mark_leaf_issued(leaf_name: str):
             "issued_on":   today(),
         },
     )
+    _refresh_counters(cheque_book)

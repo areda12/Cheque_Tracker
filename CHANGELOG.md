@@ -1,5 +1,95 @@
 # CHANGELOG
 
+## v1.1.6 — Dashboard fixture repair, workflow event logging, custody & counters (2026-08-10)
+
+Bug-fix release. No schema-breaking changes; one new optional field and one
+data-repair patch. Independently deployable ahead of v1.2.
+
+### Fixtures (`fixtures/number_card.json`, `fixtures/dashboard_chart.json`)
+- **Outgoing cards now count `Handed Over`.** `Active Outgoing`, `Pending Payable`,
+  `Due This Week Outgoing` and `Overdue Outgoing` filtered on
+  `["Received", "In Safe", "Deposited"]` — but `Deposited` is incoming-only and the
+  workflow routes every outgoing cheque through `Handed Over`, so outgoing cheques
+  disappeared from all four cards the moment they were handed over.
+- **Overdue cards actually work.** Both carried `["Cheque","due_date","<","Today"]`.
+  `"Today"` is not a Frappe keyword; it reached MariaDB as the literal string
+  (`coalesce(due_date,'0001-01-01') < 'Today'`), raised *Truncated incorrect datetime
+  value*, and matched zero rows — the cards always read 0. The clause moved to
+  `dynamic_filters_json` as `frappe.datetime.get_today()`, which is evaluated
+  client-side.
+- **Bounced cards no longer count drafts.** `Bounced Incoming` / `Bounced Outgoing`
+  were missing the `docstatus = 1` clause that the other eight cards carry, so they
+  included draft and cancelled cheques.
+- **Cheque Status Distribution** switched from `Count` to `Sum` of `amount`
+  (`group_by_type`, `aggregate_function_based_on`) — a treasury donut should show
+  money at risk, not document count.
+- **Cheques Over Time** switched to `Sum` of `amount` plotted on `due_date`.
+  `issue_date` is optional and frequently blank, so cheques silently dropped out of
+  the series; `due_date` is mandatory.
+
+### Patch — `v3_2.repair_dashboard_fixtures`
+- Repairs already-deployed sites, whose records were hot-patched by hand and would
+  otherwise keep the broken values. Reads the canonical values from the shipped
+  fixture files so patch and fixtures cannot drift.
+- `Cheques Over Time` is deleted and recreated under the same name:
+  `Dashboard Chart.chart_type` is `set_only_once`, so `Count → Sum` cannot be an
+  in-place update. The name is preserved because the Workspace `charts` child row
+  references it.
+- Idempotent; a second run is a no-op.
+
+### Server
+- **Workflow transitions log a Cheque Event.** `apply_workflow` sets the state in
+  memory and calls `doc.save()`, which for a submitted doc dispatches only
+  `on_update_after_submit` — it never reached `log_status_change`, so every
+  workflow-driven transition left no timeline row at all (production CHQ-2026-00001
+  logged nothing for its Hand Over). `on_update_after_submit` now detects the status
+  delta and appends the mapped event. The two paths stay disjoint — the UI endpoint
+  writes with `frappe.db.set_value`, which never enters the ORM — so exactly one row
+  is written per real transition.
+- **Outgoing submit no longer logs a second `Created`.** `on_submit` appended
+  `Created` for Outgoing cheques, duplicating the row `after_insert` had already
+  written and leaving the real Draft → Received transition unrecorded. It now logs
+  the transition for both directions.
+- **`current_holder` is cleared when custody leaves the company.** The field is a
+  Link to User and cannot name an external payee; leaving the last employee there
+  read as if they still held the cheque. Both transition paths clear it on
+  `Handed Over` and log a Note naming the released holder.
+- **`current_holder` is no longer defaulted for Incoming cheques.** Whoever keys in
+  an incoming cheque may never have touched it. Outgoing keeps the default — we draw
+  those, so the creator does hold the leaf.
+- **`submit()` followed by `cancel()` no longer raises `TimestampMismatchError`.**
+  `_flush_events` saved the persisted document, bumping `modified`, without
+  resyncing the in-memory copy that `check_if_latest` compares against. It also made
+  the method idempotent: the freshly written child rows are adopted, so a second
+  flush cannot write them twice.
+- **Cheque Book counters track every leaf change.** `unused/issued/voided/cancelled`
+  were recomputed only when the Cheque Book form was opened, so the list view showed
+  values that were stale the moment a leaf moved. Reserve, issue, void, cancel and
+  manual desk edits now all refresh them through a shared
+  `refresh_book_counters()`; bulk generation still refreshes once at the end.
+
+### Doctype
+- New optional `external_holder` (Data, `allow_on_submit`) on Cheque, shown in the
+  Custody section — the counterpart to clearing `current_holder`.
+
+### Tests
+- `bench run-tests --app cheque_tracker` went from **34 tests / 16 errors / 12
+  skipped** to **63 tests / 0 failures / 0 skipped**.
+- The suite resolved its fixtures with `frappe.get_all("Company", limit=1)` (ordered
+  by `modified desc`), so it ran against a different company on every run and every
+  test carried a `skipTest` guard for the case where the lookup found nothing usable.
+  A pinned environment (`cheque_tracker/tests/utils.py`, wired via the new
+  `before_tests` hook) replaces it and the guards are gone.
+- New: `cheque_tracker/tests/seed_local.py` — idempotent local seed mirroring the
+  EEI production environment, including both Appendix A.4 cheques.
+- New: `cheque_tracker/tests/verify_fixtures.py` — asserts the live records *and*
+  the shipped JSON against §3.1; also runnable as
+  `bench execute cheque_tracker.tests.verify_fixtures.run` between two migrations.
+- The concurrency test never exercised anything: its threads shared the parent's
+  connection, `frappe.local` is thread-local, and every worker died with "object is
+  not bound". Each thread now opens its own connection, which is the only way
+  `SELECT … FOR UPDATE` means anything.
+
 ## v1.1.5 — Replace workflow with bidirectional audit chain (2026-05-11)
 
 ### Workflow

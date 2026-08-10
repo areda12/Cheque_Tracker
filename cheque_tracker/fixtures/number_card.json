@@ -25,7 +25,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Handed Over\"]]]",
     "color": "#449CF0",
     "doctype": "Number Card"
   },
@@ -40,7 +40,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"status\", \"=\", \"Bounced\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"=\", \"Bounced\"]]",
     "color": "#9E1B1B",
     "doctype": "Number Card"
   },
@@ -55,7 +55,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"status\", \"=\", \"Bounced\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"=\", \"Bounced\"]]",
     "color": "#9E1B1B",
     "doctype": "Number Card"
   },
@@ -85,7 +85,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Handed Over\"]], [\"Cheque\", \"due_date\", \"Timespan\", \"this week\"]]",
     "color": "#FFA00A",
     "doctype": "Number Card"
   },
@@ -100,7 +100,8 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Incoming\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
+    "dynamic_filters_json": "[[\"Cheque\", \"due_date\", \"<\", \"frappe.datetime.get_today()\"]]",
     "color": "#E24C4C",
     "doctype": "Number Card"
   },
@@ -115,7 +116,8 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 1,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]], [\"Cheque\", \"due_date\", \"<\", \"Today\"]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Handed Over\"]]]",
+    "dynamic_filters_json": "[[\"Cheque\", \"due_date\", \"<\", \"frappe.datetime.get_today()\"]]",
     "color": "#E24C4C",
     "doctype": "Number Card"
   },
@@ -131,7 +133,7 @@
     "is_public": 1,
     "stats_time_interval": "Daily",
     "show_percentage_stats": 0,
-    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Deposited\"]]]",
+    "filters_json": "[[\"Cheque\", \"cheque_type\", \"=\", \"Outgoing\"], [\"Cheque\", \"docstatus\", \"=\", 1], [\"Cheque\", \"status\", \"in\", [\"Received\", \"In Safe\", \"Handed Over\"]]]",
     "color": "#7575FF",
     "doctype": "Number Card"
   },

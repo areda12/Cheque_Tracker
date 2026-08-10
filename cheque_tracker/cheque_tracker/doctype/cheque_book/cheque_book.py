@@ -105,6 +105,9 @@ class ChequeBook(Document):
             leaf.cheque_no     = cheque_no
             leaf.leaf_status   = "Unused"
             leaf.flags.ignore_permissions = True
+            # Bulk generation: refresh the counters once after the loop
+            # (on_submit) instead of once per leaf.
+            leaf.flags.skip_counter_refresh = True
             leaf.insert()
 
     @staticmethod
@@ -117,27 +120,10 @@ class ChequeBook(Document):
     # ------------------------------------------------------------------ #
 
     def _refresh_counters(self):
-        counts = frappe.db.sql(
-            """
-            SELECT leaf_status, COUNT(*) AS cnt
-            FROM   `tabCheque Leaf`
-            WHERE  cheque_book = %s
-            GROUP  BY leaf_status
-            """,
-            self.name,
-            as_dict=True,
-        )
-        m = {r.leaf_status: r.cnt for r in counts}
-        self.db_set("unused_leaves",    m.get("Unused",    0), update_modified=False)
-        self.db_set("issued_leaves",    m.get("Issued",    0), update_modified=False)
-        self.db_set("voided_leaves",    m.get("Voided",    0), update_modified=False)
-        self.db_set("cancelled_leaves", m.get("Cancelled", 0), update_modified=False)
-
-        # Auto-exhaust
-        if m.get("Unused", 0) == 0 and m.get("Reserved", 0) == 0:
-            if sum(m.get(s, 0) for s in ["Issued", "Voided", "Cancelled"]) > 0:
-                if frappe.db.get_value("Cheque Book", self.name, "status") == "Active":
-                    self.db_set("status", "Exhausted", update_modified=False)
+        counters = refresh_book_counters(self.name)
+        # Keep the in-memory doc consistent with what was just written.
+        for field, value in counters.items():
+            self.set(field, value)
 
     def _cancel_unused_leaves(self):
         frappe.db.sql(
@@ -148,6 +134,62 @@ class ChequeBook(Document):
             """,
             self.name,
         )
+
+
+# ------------------------------------------------------------------ #
+#  Counter refresh — module level so every leaf state change can call #
+#  it without loading the Cheque Book document (§3.2.8)               #
+# ------------------------------------------------------------------ #
+
+_COUNTER_FIELDS = {
+    "unused_leaves":    "Unused",
+    "issued_leaves":    "Issued",
+    "voided_leaves":    "Voided",
+    "cancelled_leaves": "Cancelled",
+}
+
+
+def refresh_book_counters(cheque_book: str) -> dict:
+    """Recompute the stored leaf counters for *cheque_book* from the leaves.
+
+    The counters used to be recomputed only when someone opened the Cheque Book
+    form (get_book_counters), so the list view — and anything else reading the
+    stored fields — showed values that were stale the moment a leaf moved.
+    Every reserve / issue / void / cancel / manual edit now calls this.
+
+    Returns the counter values written, so callers holding a Cheque Book doc
+    can resync their in-memory copy.
+    """
+    if not cheque_book:
+        return {}
+
+    counts = frappe.db.sql(
+        """
+        SELECT leaf_status, COUNT(*) AS cnt
+        FROM   `tabCheque Leaf`
+        WHERE  cheque_book = %s
+        GROUP  BY leaf_status
+        """,
+        cheque_book,
+        as_dict=True,
+    )
+    by_status = {row.leaf_status: row.cnt for row in counts}
+    if not counts and not frappe.db.exists("Cheque Book", cheque_book):
+        return {}
+
+    updates = {field: by_status.get(status, 0) for field, status in _COUNTER_FIELDS.items()}
+    frappe.db.set_value("Cheque Book", cheque_book, updates, update_modified=False)
+
+    # Auto-exhaust: nothing left to hand out and something was consumed.
+    if by_status.get("Unused", 0) == 0 and by_status.get("Reserved", 0) == 0:
+        consumed = sum(by_status.get(s, 0) for s in ("Issued", "Voided", "Cancelled"))
+        if consumed and frappe.db.get_value("Cheque Book", cheque_book, "status") == "Active":
+            frappe.db.set_value(
+                "Cheque Book", cheque_book, "status", "Exhausted", update_modified=False
+            )
+            updates["status"] = "Exhausted"
+
+    return updates
 
 
 # ------------------------------------------------------------------ #

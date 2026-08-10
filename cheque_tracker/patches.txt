@@ -5,3 +5,4 @@ cheque_tracker.patches.v2_0.remove_legacy_cheque_fields
 cheque_tracker.patches.v2_1.align_cheque_workflow
 cheque_tracker.patches.v3_0.drop_handover_je_field
 cheque_tracker.patches.v3_1.add_outgoing_workflow
+cheque_tracker.patches.v3_2.repair_dashboard_fixtures
