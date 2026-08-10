@@ -62,8 +62,10 @@ def make_outgoing(env=None, submit=True, start=None, **overrides):
         make_cheque_book,
     )
 
-    # A fresh book per scenario keeps leaf allocation independent.
-    start = start or (600000 + frappe.utils.cint(frappe.generate_hash(length=4), 0) % 90000)
+    # A fresh book per scenario keeps leaf allocation independent — and keeps the
+    # §4.5.4 duplicate guard from firing on a cheque number a previous scenario
+    # already used. `cint` on a hex hash returns 0, so parse it as hex.
+    start = start or (600000 + int(frappe.generate_hash(length=8), 16) % 300000)
     book = make_cheque_book(start, start + 5, company=env["company"], bank_account=env["bank_account"])
     book.submit()
 

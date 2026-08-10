@@ -285,7 +285,17 @@ def _can_submit_payment_entry(pe):
 
 
 def _submitting_transition(pe):
-    from frappe.model.workflow import get_transitions
+    """A transition available to the acting user that lands the PE on submitted.
+
+    Returns None when there is none — including when the PE has no workflow state
+    at all. Frappe's `workflow_state` custom field is created without a default
+    (frappe/workflow/doctype/workflow/workflow.py:43-62), so a Payment Entry
+    created by API rather than through the desk can genuinely have none, and
+    `get_transitions` raises `WorkflowStateError` for it. Treating that as "cannot
+    submit" routes it to the ToDo path, which is the conservative answer: better a
+    human looks at it than the approval gate gets skipped.
+    """
+    from frappe.model.workflow import WorkflowStateError, get_transitions
 
     workflow_name = _payment_entry_workflow()
     if not workflow_name:
@@ -294,7 +304,15 @@ def _submitting_transition(pe):
     workflow = frappe.get_doc("Workflow", workflow_name)
     submitted_states = {s.state for s in workflow.states if str(s.doc_status) == "1"}
 
-    for transition in get_transitions(pe, workflow) or []:
+    if not pe.get(workflow.workflow_state_field):
+        return None
+
+    try:
+        transitions = get_transitions(pe, workflow, raise_exception=True) or []
+    except WorkflowStateError:
+        return None
+
+    for transition in transitions:
         if transition.get("next_state") in submitted_states:
             return transition
     return None

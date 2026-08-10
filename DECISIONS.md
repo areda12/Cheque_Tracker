@@ -147,3 +147,56 @@ saying "Received" on outgoing cheques, so the timeline would contradict the
 document it belongs to. The v3_3 patch rewrites those rows as well as the status
 field, with `update_modified=False` — a vocabulary rename is not a business event
 and should not make every migrated cheque look edited today.
+
+---
+
+## D9 — A blank `reminder_days` falls back to 3, so "overdue only" is not configurable
+
+`reminder_days` postdates the existing Settings row, so it reads back as 0 on any
+site that has not touched it. Treating 0 literally would silently shrink the
+digest to overdue-only on every upgraded site — a quiet loss of the feature.
+
+It is coerced to the field default of 3 instead. The cost is that an admin cannot
+*deliberately* configure an overdue-only digest by setting 0; a blank field is far
+more likely than that intent. One-line reversal if Ahmed wants 0 honoured.
+
+---
+
+## D10 — Arabic translations are site-wide, and two entries override ERPNext
+
+Frappe's translation namespace is flat: an app's `ar.csv` applies to every app on
+the site. Most of what `cheque_tracker` ships is a repair — ERPNext's own Arabic
+has `Due Date` → "بسبب تاريخ" (nonsense), `Draft` → "مشروع" ("project"),
+`Amount` → "كمية" ("quantity") — but two entries are genuinely context-dependent
+and worth Ahmed's eye before production:
+
+| String | Ours | Right for | Wrong for |
+|---|---|---|---|
+| `Issue` | إصدار | issuing a cheque | ERPNext's Material Issue (صرف), the Issue doctype |
+| `Clear` | تحصيل | clearing a cheque | anywhere "Clear" means "empty a field" |
+
+Both are workflow action names §4.7 explicitly requires translating, and Frappe
+offers no context key that a bare `_()` call site would match, so this cannot be
+resolved inside the CSV. If the Arabic desk UI matters for other apps on
+`aldar`, drop those two rows — everything else is safe.
+
+The file carries 240 entries rather than the 60–90 §4.7 estimated. The six
+mandatory coverage bullets alone (13 statuses + 14 workflow actions + 5 bounce
+reasons + 7 doctype names + report labels + every `frappe.throw`/`msgprint` in the
+Cheque controller) require ~190 strings; the estimate undercounted the surface.
+Coverage was treated as the requirement and the number as the estimate.
+
+---
+
+## D11 — There were two `tasks.py` files; the module-level copy was deleted
+
+`cheque_tracker/tasks.py` and `cheque_tracker/cheque_tracker/tasks.py` were
+byte-identical and both git-tracked, with `hooks.py` pointing at the inner one.
+Anyone opening "tasks.py" had even odds of editing the dead copy, and the two
+would have drifted the moment either was touched.
+
+Consolidated onto the app-level `cheque_tracker/tasks.py` — the conventional
+Frappe location — with both scheduled jobs registered under
+`cheque_tracker.tasks.*` and the duplicate removed. Both paths verified to
+resolve through `frappe.get_attr`, the same call `ScheduledJobType.execute`
+makes.

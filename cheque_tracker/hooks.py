@@ -98,7 +98,8 @@ fixtures = [
 # ------------------------------------------------------------------
 scheduler_events = {
     "daily": [
-        "cheque_tracker.cheque_tracker.tasks.auto_update_cheque_statuses",
+        "cheque_tracker.tasks.auto_update_cheque_statuses",
+        "cheque_tracker.tasks.send_daily_cheque_reminders",
     ],
 }
 

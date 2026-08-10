@@ -118,7 +118,28 @@ def _create_draft_cheque(doc):
         return None
 
     cheque.flags.ignore_permissions = True
-    cheque.insert(ignore_permissions=True)
+
+    # A problem in the tracker must never block the accountant's Payment Entry.
+    # The PE is the document that matters to the ledger; a missing mirror record
+    # is an inconvenience, a failed save is lost work. Roll back to a savepoint so
+    # the failed insert cannot leave a half-written cheque behind, then say so
+    # loudly — silently skipping would let cheques go untracked.
+    savepoint = "ct_pe_autocreate"
+    frappe.db.savepoint(savepoint)
+    try:
+        cheque.insert(ignore_permissions=True)
+    except Exception as exc:
+        frappe.db.rollback(save_point=savepoint)
+        frappe.log_error(
+            title="Cheque Tracker: auto-create from Payment Entry failed",
+            message=f"Payment Entry {doc.name}: {frappe.get_traceback(with_context=True)}",
+        )
+        frappe.msgprint(
+            _("Could not create a Cheque for {0}: {1}").format(doc.name, exc),
+            title=_("Cheque Tracker"),
+            indicator="red",
+        )
+        return None
 
     frappe.msgprint(
         _("Draft Cheque {0} created for this Payment Entry.").format(
