@@ -209,6 +209,14 @@ both modes.
 | Criterion | Result | Test |
 |---|---|---|
 | Auto-create fires exactly once | **PASS** | `test_auto_create_fires_once` |
+| **Clear is refused with no accounting document** | **PASS** | `test_clear_is_blocked_without_an_accounting_document` |
+| **Cash Clear refused likewise** | **PASS** | `test_cash_clear_is_blocked_without_an_accounting_document` |
+| **The UI endpoint is gated too, not just the form** | **PASS** | `test_ui_path_is_blocked_too` |
+| **System Manager override works and is logged with who** | **PASS** | `test_system_manager_can_override_and_it_is_logged` |
+| **Override needs a reason** | **PASS** | `test_override_requires_a_reason` |
+| **Override refused to a non-System-Manager** | **PASS** | `test_override_is_refused_to_a_non_system_manager` |
+| **A Journal Entry also satisfies the gate** | **PASS** | `test_a_journal_entry_also_satisfies_the_gate` |
+| **Normal PE-linked path unaffected** | **PASS** | `test_normal_pe_linked_path_still_clears` |
 | Direction + fields mapped from the PE | **PASS** | `test_auto_create_maps_direction_and_fields` |
 | Outgoing PE does not auto-create (needs a book leaf) | **PASS** | `test_outgoing_payment_maps_to_outgoing_cheque` |
 | Draft-PE edits sync onto the draft cheque | **PASS** | `test_draft_pe_edits_sync_onto_the_draft_cheque` |
@@ -230,17 +238,23 @@ closed statuses excluded, Bounced still reminded (money still owed), same-day
 idempotency proven both in-transaction and cross-process, recipient parsing,
 Notification Log row, and the `developer_mode` Slack guard.
 
-**Translations** (§4.7, 9 tests) — 240 entries; the file parses, key strings
-translate, and the completeness tests read live meta so adding a status or
-workflow action without translating it turns them red.
+**Translations** (§4.7, 10 tests) — **201 app-unique entries**. The app
+translates only strings frappe/erpnext do not: the namespace is flat, so an
+app-level entry rewrites that string for every app on the site. 39 shadowing
+entries were removed. `tests/verify_translations.py` enforces the rule against
+the 16,069 msgids in the two core catalogues, in the suite and as
+`bench execute cheque_tracker.tests.verify_translations.run`. The completeness
+checks now assert coverage across both catalogues, so a new untranslated status
+still turns the suite red.
 
 **migrate ×2**
 
 ```
-migrate1 exit=0  →  verify_fixtures OK (11 cards + 2 charts, DB and shipped JSON)
-suite1  exit=0   Ran 110 tests   OK
-migrate2 exit=0  →  verify_fixtures OK
-suite2  exit=0   Ran 110 tests   OK
+migrate1 exit=0  →  verify_fixtures OK   verify_translations OK
+suite1  exit=0   Ran 118 tests   OK
+migrate2 exit=0  →  verify_fixtures OK   verify_translations OK
+suite2  exit=0   Ran 118 tests   OK
+scenario matrix: 11/11 passed
 ```
 
 ### Test suite
@@ -249,7 +263,7 @@ suite2  exit=0   Ran 110 tests   OK
 |---|---|---|---|---|
 | Baseline (`origin/main`) | 34 | 0 | 16 | 12 |
 | v1.1.6 | 63 | 0 | 0 | 0 |
-| **v1.2.0** | **110** | **0** | **0** | **0** |
+| **v1.2.0** | **118** | **0** | **0** | **0** |
 
 ### Sensitivity check
 
@@ -261,6 +275,8 @@ a time, each reverted:
 | Idempotency guard disabled | **red** — `test_digest_is_sent_once_per_day` |
 | Closed-status filter narrowed to `Cancelled` only | **red** — `test_closed_statuses_are_excluded` |
 | Due-date bound changed to exclude overdue | **red** — 5 tests |
+| Clearance gate disabled | **red** — 3 tests |
+| A core-shadowing translation re-added | **red** — 1 test |
 
 ### Deviations and known limitations
 
@@ -268,13 +284,17 @@ a time, each reverted:
    important thing to review in this release. `DECISIONS.md` D2 has the full
    reasoning; the short version is that keeping the v1.1.x clearance JE alongside
    §4.5's submitted Payment Entry would double-post every collection.
-2. **A cheque with no linked Payment Entry posts nothing when it clears** —
-   deliberate (§4.5.5), and announced with a message and a timeline entry rather
-   than silently. Production CHQ-2026-00001 is such a cheque.
+2. **A cheque with no accounting document can no longer be cleared** — refused on
+   both transition paths, with a logged System Manager override. Production
+   CHQ-2026-00001 (outgoing, no PE link) is exactly the case this catches: it
+   will refuse to clear until someone links the Payment Entry or overrides
+   deliberately. Worth knowing before the first eei-test soak.
 3. **The duplicate guard needs `drawee_bank`** to fire — D3.
-4. **Two Arabic entries override ERPNext's own** (`Issue`, `Clear`) because
-   Frappe's translation namespace is flat — D10. Worth a decision before
-   production if the Arabic desk UI matters for other apps on `aldar`.
+4. **Some poor core Arabic is now visible again** — the app no longer shadows
+   frappe/erpnext at all (D10), so core's `Draft` → "مشروع" ("project"),
+   `Due Date` → "بسبب تاريخ" and `Amount` → "كمية" ("quantity") render as core has
+   them. Fixing those belongs upstream or in a site-level Translation record, not
+   in an app override.
 5. **`auto_update_cheque_statuses` still only logs overdue *Deposited* cheques**,
    so outgoing overdue cheques are not logged by it. Pre-existing, and superseded
    in practice by the §4.6 digest, which covers both directions. Left alone to
