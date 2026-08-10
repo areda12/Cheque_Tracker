@@ -53,18 +53,6 @@ fixtures = [
         ],
     },
     {
-        "dt": "Workspace",
-        "filters": [["name", "=", "Cheque Tracker"]],
-    },
-    {
-        "dt": "Workspace Sidebar",
-        "filters": [["name", "=", "Cheque Tracker"]],
-    },
-    {
-        "dt": "Desktop Icon",
-        "filters": [["app", "=", "cheque_tracker"]],
-    },
-    {
         "dt": "Number Card",
         "filters": [["module", "=", "Cheque Tracker"]],
     },
@@ -136,8 +124,14 @@ doc_events = {
 # See cheque_tracker/install.py and AUDIT.md §3 for rationale.
 # Bootstraps Cheque Tracker Settings (Singles row) and warns if
 # required account fields are unconfigured.
+#
+# v1.3: `after_migrate = ensure_ui_fixtures` is gone. It existed to re-insert the
+# Workspace and Desktop Icon that `remove_orphan_entities()` deleted on every
+# migrate — it deleted them because the app had no `workspace/` directory and an
+# empty `desktop_icon/` one, so core could not find a file backing either record
+# (frappe/model/sync.py:271-312). Both now ship as standard files where core
+# looks for them, so nothing is orphaned and nothing needs re-inserting.
 after_install = "cheque_tracker.install.after_install"
-after_migrate = "cheque_tracker.install.ensure_ui_fixtures"
 
 # ------------------------------------------------------------------
 # Tests

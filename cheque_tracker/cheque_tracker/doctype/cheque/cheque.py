@@ -376,7 +376,10 @@ class Cheque(Document):
     def log_status_change(self, new_status: str, notes: str = ""):
         old_status = self.status
         updates = {"status": new_status}
-        if new_status == "Cleared":
+        if new_status == "Cleared" and not self.cleared_date:
+            # Only default it. A caller that already knows the real clearance
+            # date — the batch cascade passes the bank's date — must not have it
+            # silently overwritten with today's.
             updates["cleared_date"] = today()
 
         # Clear the internal custodian in the SAME write as the status, so the

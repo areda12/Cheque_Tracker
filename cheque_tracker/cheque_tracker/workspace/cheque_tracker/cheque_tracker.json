@@ -1,0 +1,245 @@
+{
+ "name": "Cheque Tracker",
+ "label": "Cheque Tracker",
+ "title": "Cheque Tracker",
+ "sequence_id": 1.0,
+ "parent_page": "Invoicing",
+ "module": "Cheque Tracker",
+ "app": "cheque_tracker",
+ "type": "Workspace",
+ "icon": "receipt-text",
+ "indicator_color": "green",
+ "hide_custom": 1,
+ "public": 1,
+ "is_hidden": 0,
+ "content": "[{\"id\": \"h_action\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Action Required</b></span>\", \"col\": 12}}, {\"id\": \"nc_o_in\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Overdue Incoming\", \"col\": 6}}, {\"id\": \"nc_o_out\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Overdue Outgoing\", \"col\": 6}}, {\"id\": \"nc_d_in\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Due This Week Incoming\", \"col\": 6}}, {\"id\": \"nc_d_out\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Due This Week Outgoing\", \"col\": 6}}, {\"id\": \"spacer1\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h_active\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Active Portfolio</b></span>\", \"col\": 12}}, {\"id\": \"nc_a_in\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Active Incoming\", \"col\": 6}}, {\"id\": \"nc_a_out\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Active Outgoing\", \"col\": 6}}, {\"id\": \"nc_p_in\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Pending Receivable\", \"col\": 6}}, {\"id\": \"nc_p_out\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Pending Payable\", \"col\": 6}}, {\"id\": \"spacer2\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h_failed\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Failed</b></span>\", \"col\": 12}}, {\"id\": \"nc_b_in\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Bounced Incoming\", \"col\": 6}}, {\"id\": \"nc_b_out\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Bounced Outgoing\", \"col\": 6}}, {\"id\": \"spacer3\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h_trends\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Trends</b></span>\", \"col\": 12}}, {\"id\": \"ch_status\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Cheque Status Distribution\", \"col\": 6}}, {\"id\": \"ch_time\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Cheques Over Time\", \"col\": 6}}, {\"id\": \"spacer4\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h_cheques\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Cheques</b></span>\", \"col\": 12}}, {\"id\": \"card_cheques\", \"type\": \"card\", \"data\": {\"card_name\": \"Cheques\", \"col\": 4}}, {\"id\": \"card_books\", \"type\": \"card\", \"data\": {\"card_name\": \"Cheque Books\", \"col\": 4}}, {\"id\": \"card_settings\", \"type\": \"card\", \"data\": {\"card_name\": \"Settings\", \"col\": 4}}, {\"id\": \"spacer5\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h_reports\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px; letter-spacing: 0.18px;\\\"><b>Reports</b></span>\", \"col\": 12}}, {\"id\": \"card_reports\", \"type\": \"card\", \"data\": {\"card_name\": \"Reports\", \"col\": 12}}]",
+ "doctype": "Workspace",
+ "shortcuts": [
+  {
+   "type": "DocType",
+   "link_to": "Cheque",
+   "label": "Cheque",
+   "stats_filter": "{\"docstatus\":1}",
+   "color": "Blue",
+   "doctype": "Workspace Shortcut"
+  },
+  {
+   "type": "DocType",
+   "link_to": "Cheque Book",
+   "label": "Cheque Book",
+   "color": "Green",
+   "doctype": "Workspace Shortcut"
+  },
+  {
+   "type": "DocType",
+   "link_to": "Cheque Tracker Settings",
+   "label": "Settings",
+   "color": "Grey",
+   "doctype": "Workspace Shortcut"
+  }
+ ],
+ "links": [
+  {
+   "type": "Card Break",
+   "label": "Cheques",
+   "hidden": 0,
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 2,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque",
+   "hidden": 0,
+   "link_type": "DocType",
+   "link_to": "Cheque",
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque Batch",
+   "hidden": 0,
+   "link_type": "DocType",
+   "link_to": "Cheque Batch",
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Card Break",
+   "label": "Cheque Books",
+   "hidden": 0,
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 2,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque Book",
+   "hidden": 0,
+   "link_type": "DocType",
+   "link_to": "Cheque Book",
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque Leaf",
+   "hidden": 0,
+   "link_type": "DocType",
+   "link_to": "Cheque Leaf",
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Card Break",
+   "label": "Settings",
+   "hidden": 0,
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 1,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque Tracker Settings",
+   "hidden": 0,
+   "link_type": "DocType",
+   "link_to": "Cheque Tracker Settings",
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Card Break",
+   "label": "Reports",
+   "hidden": 0,
+   "onboard": 0,
+   "is_query_report": 0,
+   "link_count": 4,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheque Book Utilization",
+   "hidden": 0,
+   "link_type": "Report",
+   "link_to": "Cheque Book Utilization",
+   "onboard": 0,
+   "is_query_report": 1,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Deposited Not Cleared",
+   "hidden": 0,
+   "link_type": "Report",
+   "link_to": "Deposited Not Cleared",
+   "onboard": 0,
+   "is_query_report": 1,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Bounced Cheques Register",
+   "hidden": 0,
+   "link_type": "Report",
+   "link_to": "Bounced Cheques Register",
+   "onboard": 0,
+   "is_query_report": 1,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  },
+  {
+   "type": "Link",
+   "label": "Cheques Due This Week",
+   "hidden": 0,
+   "link_type": "Report",
+   "link_to": "Cheques Due This Week",
+   "onboard": 0,
+   "is_query_report": 1,
+   "link_count": 0,
+   "doctype": "Workspace Link"
+  }
+ ],
+ "number_cards": [
+  {
+   "number_card_name": "Overdue Incoming",
+   "label": "Overdue Incoming",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Due This Week Incoming",
+   "label": "Due This Week Incoming",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Active Incoming",
+   "label": "Active Incoming",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Pending Receivable",
+   "label": "Pending Receivable",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Bounced Incoming",
+   "label": "Bounced Incoming",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Overdue Outgoing",
+   "label": "Overdue Outgoing",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Due This Week Outgoing",
+   "label": "Due This Week Outgoing",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Active Outgoing",
+   "label": "Active Outgoing",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Pending Payable",
+   "label": "Pending Payable",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Bounced Outgoing",
+   "label": "Bounced Outgoing",
+   "doctype": "Workspace Number Card"
+  },
+  {
+   "number_card_name": "Endorsed"
+  }
+ ],
+ "charts": [
+  {
+   "chart_name": "Cheque Status Distribution",
+   "label": "Cheque Status Distribution",
+   "doctype": "Workspace Chart"
+  },
+  {
+   "chart_name": "Cheques Over Time",
+   "label": "Cheques Over Time",
+   "doctype": "Workspace Chart"
+  }
+ ]
+}

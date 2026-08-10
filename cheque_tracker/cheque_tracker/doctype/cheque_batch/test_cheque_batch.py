@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+
+from cheque_tracker.tests.utils import get_test_env
 from frappe.utils import now_datetime, today
 
 from cheque_tracker.cheque_tracker.doctype.cheque.cheque import Cheque
@@ -55,6 +57,10 @@ class TestChequeBatch(FrappeTestCase):
         batch = frappe.new_doc("Cheque Batch")
         batch.batch_date = today()
         batch.company = self.company
+        # v1.3: the cascade routes through change_cheque_status, which enforces
+        # the same preconditions a single deposit does — including a bank
+        # account. The batch supplies it to members that have none.
+        batch.bank_account = get_test_env()["bank_account"]
         for chq_name in cheque_names:
             batch.append("items", {"cheque": chq_name})
         batch.flags.ignore_permissions = True
