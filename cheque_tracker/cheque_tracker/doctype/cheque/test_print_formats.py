@@ -20,7 +20,9 @@ when the hook lands) and rendering without it (proving the guard degrades to
 figures instead of 500-ing).
 """
 
+import glob
 import os
+import re
 import shutil
 
 import frappe
@@ -505,3 +507,86 @@ class TestPrintFormatsAsPdf(ChequePrintFormatTestCase):
                 )
                 self.assertTrue(pdf)
                 self.assertTrue(pdf.startswith(b"%PDF"))
+
+
+# ====================================================================== #
+#  v1.3.1 — Cairo is bundled, not fetched                                #
+# ====================================================================== #
+
+class TestBundledCairoFont(FrappeTestCase):
+    """Frappe Cloud's wkhtmltopdf has no external egress, so a hosted-font
+    @import silently fails and the PDF falls back to a Latin face — Arabic then
+    renders in whatever the substitution picks. Site-local assets load fine,
+    which the letterhead image proves.
+    """
+
+    FORMAT_DIR = os.path.join(
+        frappe.get_app_path("cheque_tracker"), "cheque_tracker", "print_format"
+    )
+    FONT_DIR = os.path.join(frappe.get_app_path("cheque_tracker"), "public", "fonts")
+    EXPECTED_FACES = ("Cairo-Regular.ttf", "Cairo-SemiBold.ttf", "Cairo-Bold.ttf")
+
+    def _format_html(self):
+        paths = glob.glob(os.path.join(self.FORMAT_DIR, "*", "*.html"))
+        self.assertEqual(len(paths), 3, f"expected 3 print formats, found {paths}")
+        return {os.path.basename(p): open(p, encoding="utf-8").read() for p in paths}
+
+    def test_no_hosted_font_reference_remains(self):
+        """Nothing may reach out to a font CDN at render time."""
+        for name, html in self._format_html().items():
+            for needle in ("fonts.googleapis", "fonts.gstatic", "//fonts.google"):
+                self.assertNotIn(needle, html, f"{name} still references {needle}")
+
+    def test_every_format_declares_the_three_faces(self):
+        for name, html in self._format_html().items():
+            self.assertIn("@font-face", html, f"{name} declares no @font-face")
+            for face in self.EXPECTED_FACES:
+                self.assertIn(
+                    f"/assets/cheque_tracker/fonts/{face}",
+                    html,
+                    f"{name} does not reference {face}",
+                )
+
+    def test_font_files_exist_at_the_referenced_paths(self):
+        """A @font-face pointing at a missing file fails exactly as silently as
+        the CDN did, so assert the bytes are actually shipped."""
+        referenced = set()
+        for html in self._format_html().values():
+            referenced |= set(re.findall(r"/assets/cheque_tracker/fonts/([A-Za-z0-9\-_.]+)", html))
+
+        self.assertTrue(referenced, "no font assets referenced at all")
+        for filename in sorted(referenced):
+            path = os.path.join(self.FONT_DIR, filename)
+            self.assertTrue(os.path.exists(path), f"{filename} referenced but not shipped ({path})")
+            self.assertGreater(os.path.getsize(path), 10_000, f"{filename} looks truncated")
+
+    def test_faces_are_truetype_not_woff(self):
+        """wkhtmltopdf embeds QtWebKit, which cannot read woff2."""
+        for name, html in self._format_html().items():
+            self.assertNotIn("woff", html.lower(), f"{name} references a woff face")
+            self.assertIn("format('truetype')", html, f"{name} does not declare truetype")
+
+    def test_shipped_faces_are_static_not_variable(self):
+        """A variable TTF renders at one weight under QtWebKit, so SemiBold and
+        Bold would be indistinguishable in the PDF."""
+        from fontTools.ttLib import TTFont
+
+        for face in self.EXPECTED_FACES:
+            path = os.path.join(self.FONT_DIR, face)
+            font = TTFont(path, lazy=True)
+            self.assertNotIn("fvar", font, f"{face} is a variable font")
+            font.close()
+
+    def test_licence_is_shipped(self):
+        self.assertTrue(
+            os.path.exists(os.path.join(self.FONT_DIR, "OFL.txt")),
+            "Cairo is SIL OFL — the licence must ship with the fonts",
+        )
+
+    def test_cairo_is_first_in_the_stack_with_fallbacks(self):
+        for name, html in self._format_html().items():
+            self.assertRegex(
+                html,
+                r"font-family:\s*'Cairo'\s*,\s*'Segoe UI'\s*,\s*Tahoma",
+                f"{name} lost the Cairo-first stack or its fallbacks",
+            )

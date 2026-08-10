@@ -92,9 +92,10 @@ class Cheque(Document):
         """
         before = self.get_doc_before_save()
         if before and before.status != self.status:
-            _validate_status_requirements(self, self.status)
+            _validate_status_requirements(self, self.status, old_status=before.status)
         cheque_financial.validate_payment_entry_link(self)
         cheque_financial.validate_clearance_override(self)
+        cheque_financial.validate_reference_edit_after_submit(self)
 
     def before_submit(self):
         # Which bank the cheque is drawn on is required to track an incoming
@@ -259,6 +260,7 @@ class Cheque(Document):
                 ),
             )
             self._apply_custody_side_effects(self.status)
+            self._apply_unclear_side_effects(before.status, self.status)
 
         self._flush_events()
 
@@ -395,6 +397,8 @@ class Cheque(Document):
         if released_holder:
             self.current_holder = None
 
+        self._apply_unclear_side_effects(old_status, new_status)
+
         self._append_event(
             STATUS_EVENT_MAP.get(new_status, "Note"),
             notes=notes or f"Status changed from {old_status} to {new_status}.",
@@ -409,6 +413,51 @@ class Cheque(Document):
                 ),
             )
         self._flush_events()
+
+    def _apply_unclear_side_effects(self, old_status: str, new_status: str):
+        """Reverse the clearance stamp and say who did it, and why.
+
+        Deliberately does NOT touch the Payment Entry. Clearing may have
+        submitted one, and cancelling a submitted PE reverses GL entries and can
+        break its own downstream links — that is an accounting decision with
+        consequences the tracker cannot see, so it belongs to a human. We say so
+        loudly instead of guessing.
+        """
+        if old_status != "Cleared" or new_status == "Cleared":
+            return
+
+        reason = (self.get("unclear_reason") or "").strip() or "(none given)"
+        self.db_set("cleared_date", None, update_modified=False)
+
+        self._append_event(
+            "Note",
+            notes=(
+                f"Clearance reversed to {new_status} by {frappe.session.user}. "
+                f"Reason: {reason}. Cleared Date cleared."
+            ),
+        )
+
+        posted = cheque_financial.linked_accounting_document(self)
+        if posted and posted[0] == "Payment Entry":
+            docstatus = frappe.db.get_value("Payment Entry", posted[1], "docstatus")
+            if docstatus == 1:
+                message = _(
+                    "Payment Entry {0} is still submitted and has NOT been cancelled — "
+                    "reversing a cheque clearance does not unwind the ledger. Cancel or "
+                    "amend it yourself if this collection did not happen."
+                ).format(posted[1])
+                self._append_event(
+                    "Note",
+                    notes=(
+                        f"Payment Entry {posted[1]} left submitted on un-clear; "
+                        "it must be cancelled or amended manually."
+                    ),
+                    reference_doctype="Payment Entry",
+                    reference_name=posted[1],
+                )
+                frappe.msgprint(
+                    message, title=_("Payment Entry still posted"), indicator="orange"
+                )
 
     def _apply_custody_side_effects(self, new_status: str):
         """Drop the internal custodian once the cheque has left the company.
@@ -670,16 +719,30 @@ _TRANSITION_ROLES = {
     ("Issued", "Returned"):        _TREASURY,
     ("Issued", "Cancelled"):       _TREASURY,
     ("Bounced", "Replaced"):       _TREASURY,
+    # ---- Reversal (§v1.3.1) — System Manager only -----------------------
+    ("Cleared", "Deposited"):      {"System Manager"},
+    ("Cleared", "Handed Over"):    {"System Manager"},
 }
 
+# Reversing a clearance is not an ordinary transition: the money was recorded as
+# collected and, under the v1.2 model, a Payment Entry may already have posted.
+UNCLEAR_TARGETS = {"Incoming": "Deposited", "Outgoing": "Handed Over"}
 
-def _validate_status_requirements(doc, new_status: str):
+
+def _validate_status_requirements(doc, new_status: str, old_status: str = None):
     """Preconditions for landing in `new_status`, shared by both paths.
 
     Called from `before_update_after_submit` (workflow saves) and from
     `_validate_transition` (the whitelisted UI endpoint), so a rule cannot be
     satisfied on one route and skipped on the other.
+
+    `old_status` must be passed explicitly by the workflow path: apply_workflow
+    sets the state field in memory before saving, so by the time this runs
+    `doc.status` is already the NEW status and reading it would silently skip
+    every rule about what a cheque is moving *away* from.
     """
+    if old_status is None:
+        old_status = doc.status
     if new_status in INCOMING_STATUSES and new_status not in OUTGOING_STATUSES:
         if doc.cheque_type != "Incoming":
             frappe.throw(
@@ -735,6 +798,22 @@ def _validate_status_requirements(doc, new_status: str):
             frappe.throw(
                 _("Bank Account is required before marking as Cleared."),
                 frappe.ValidationError,
+            )
+
+    if old_status == "Cleared" and new_status != "Cleared":
+        expected = UNCLEAR_TARGETS.get(doc.cheque_type)
+        if new_status != expected:
+            frappe.throw(
+                _("A cleared {0} cheque can only be reversed to {1}.").format(
+                    doc.cheque_type, expected
+                ),
+                frappe.ValidationError,
+            )
+        if not (doc.get("unclear_reason") or "").strip():
+            frappe.throw(
+                _("Give a reason for reversing the clearance of {0}.").format(doc.name),
+                frappe.ValidationError,
+                title=_("Un-clear reason required"),
             )
 
     if new_status == "Endorsed":

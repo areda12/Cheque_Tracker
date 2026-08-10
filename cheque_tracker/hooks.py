@@ -48,6 +48,7 @@ fixtures = [
                     "Return",
                     "Replace",
                     "Cancel Cheque",
+                    "Un-clear",
                 ],
             ]
         ],

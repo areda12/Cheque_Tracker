@@ -57,6 +57,7 @@
   "pe_pending_submission",
   "clearance_override",
   "clearance_override_reason",
+  "unclear_reason",
   "col_break_replacement",
   "replacement_cheque",
   "original_cheque",
@@ -337,13 +338,15 @@
    "fieldname": "reference_doctype",
    "fieldtype": "Link",
    "label": "Reference DocType",
-   "options": "DocType"
+   "options": "DocType",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "reference_name",
    "fieldtype": "Dynamic Link",
    "label": "Reference Name",
-   "options": "reference_doctype"
+   "options": "reference_doctype",
+   "allow_on_submit": 1
   },
   {
    "fieldname": "col_break_acct",
@@ -404,6 +407,13 @@
    "allow_on_submit": 1,
    "depends_on": "eval:doc.clearance_override",
    "mandatory_depends_on": "eval:doc.clearance_override"
+  },
+  {
+   "fieldname": "unclear_reason",
+   "fieldtype": "Small Text",
+   "label": "Un-clear Reason",
+   "allow_on_submit": 1,
+   "description": "Required to reverse a clearance. Recorded on the timeline with the user who did it."
   },
   {
    "fieldname": "col_break_replacement",

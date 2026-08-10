@@ -1,5 +1,66 @@
 # CHANGELOG
 
+## v1.3.1 — Bundled Cairo, un-clear, editable references (2026-08-11)
+
+Patch release. No migration, no data rewrite; one new field and two new workflow
+transitions.
+
+### Cairo ships with the app (§5.1 follow-up)
+
+The print formats named `'Cairo'` in their font stack but **never loaded it**, so
+Arabic has been rendering in the Segoe UI / Tahoma fallback everywhere — not only
+in PDF. The reference design fetches Cairo from a hosted font service, which
+cannot work here: Frappe Cloud's wkhtmltopdf has no external egress, so the
+request silently fails and the document falls back. Assets served by the site
+itself *do* load, which the letterhead image already proved.
+
+- `Cairo-Regular` / `Cairo-SemiBold` / `Cairo-Bold` TTF are vendored into
+  `cheque_tracker/public/fonts/`, with the SIL OFL licence alongside them.
+- All three formats declare `@font-face` rules against
+  `/assets/cheque_tracker/fonts/…` with `format('truetype')`. **TrueType
+  specifically** — wkhtmltopdf embeds QtWebKit, which cannot read the modern
+  compressed web-font formats.
+- `'Segoe UI', Tahoma, sans-serif` remain as fallbacks after Cairo.
+
+`google/fonts` now ships Cairo only as a variable font (`Cairo[slnt,wght].ttf`,
+no `static/` directory), so the three faces are static instances pinned from that
+canonical binary at `wght` 400 / 600 / 700 with `slnt=0` — the same way Google's
+own `static/` folders are produced. QtWebKit has no variable-font support, so
+shipping the variable file directly would have rendered SemiBold and Bold
+identically.
+
+### Receipt Voucher
+
+The amount row's label cell was ~20% wide (a 46% spacer plus a 34% value column),
+so "قيمة الشيك — Cheque Amount" wrapped one word per line. The label is now
+`white-space: nowrap` and the spacer is 30%.
+
+### Accounting references editable after submit
+
+`reference_doctype` and `reference_name` gained `allow_on_submit`, so a Payment
+Entry can be attached to a cheque that was submitted before the PE existed —
+which the v1.2 clearance gate now requires. Production was bridging this with two
+Property Setters; they can be deleted once this deploys.
+
+The relaxation is bounded: after submit a reference may be **filled in when
+empty** by anyone who can edit the cheque, but **changing or clearing one that is
+already set is System Manager only** — repointing a submitted cheque moves the
+money to a different document after the fact. The §4.5.3 amount/party checks
+still run on every save.
+
+### Un-clear (System Manager only)
+
+`Cleared` is no longer terminal. A System Manager can reverse a clearance back to
+`Deposited` (incoming) or `Handed Over` (outgoing):
+
+- A reason is **mandatory** and is recorded, with the user who did it, as a
+  Cheque Event.
+- `cleared_date` is cleared.
+- **The Payment Entry is deliberately not touched.** If the clearance submitted
+  one, it stays submitted and the user is told to cancel or amend it themselves.
+  Cancelling a submitted PE reverses GL entries and can break its own downstream
+  links — an accounting decision with consequences the tracker cannot see.
+
 ## v1.3.0 — Print formats, batch cascade, reports, workspace (2026-08-10)
 
 Ops-polish release. No accounting behaviour changes; additive except where noted.

@@ -467,3 +467,204 @@ class TestStatusVocabularyMigration(FrappeTestCase):
         second = frappe.db.get_value("Cheque", cheque.name, "status")
         self.assertEqual(first, "Issued")
         self.assertEqual(second, "Issued")
+
+
+# ====================================================================== #
+#  v1.3.1 — reversing a clearance, and editing references after submit   #
+# ====================================================================== #
+
+
+class TestUnclear(FrappeTestCase):
+    """Cleared is no longer terminal, but reversing it is a System Manager act
+    and it does NOT unwind the ledger."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ensure_payment_entry_workflow()
+        ensure_pe_users()
+
+    def setUp(self):
+        self.env = get_test_env()
+        frappe.set_user("Administrator")
+
+    def tearDown(self):
+        frappe.set_user("Administrator")
+
+    def _cleared_incoming(self):
+        cheque = e2e.make_incoming()
+        e2e.act(cheque, "Deposit")
+        e2e.act(cheque, "Clear")
+        self.assertEqual(cheque.status, "Cleared")
+        return cheque
+
+    def _notes(self, cheque_name):
+        return frappe.get_all(
+            "Cheque Event",
+            filters={"parent": cheque_name, "event_type": "Note"},
+            pluck="notes",
+        )
+
+    def test_incoming_unclears_back_to_deposited(self):
+        cheque = self._cleared_incoming()
+        self.assertTrue(cheque.cleared_date)
+
+        e2e.set_fields(cheque, unclear_reason="Bank reversed the credit — cheque returned unpaid.")
+        e2e.act(cheque, "Un-clear")
+
+        self.assertEqual(cheque.status, "Deposited")
+        self.assertFalse(
+            frappe.db.get_value("Cheque", cheque.name, "cleared_date"),
+            "cleared_date must be cleared on un-clear",
+        )
+
+        note = next((n for n in self._notes(cheque.name) if "Clearance reversed" in (n or "")), None)
+        self.assertIsNotNone(note, f"un-clear not on the timeline: {self._notes(cheque.name)}")
+        self.assertIn(frappe.session.user, note, "the note must name who reversed it")
+        self.assertIn("returned unpaid", note, "the note must carry the reason")
+
+    def test_outgoing_unclears_back_to_handed_over(self):
+        cheque = e2e.make_outgoing()
+        e2e.act(cheque, "Hand Over")
+        e2e.act(cheque, "Clear")
+        self.assertEqual(cheque.status, "Cleared")
+
+        e2e.set_fields(cheque, unclear_reason="Posted against the wrong cheque.")
+        e2e.act(cheque, "Un-clear")
+
+        self.assertEqual(cheque.status, "Handed Over")
+        self.assertFalse(frappe.db.get_value("Cheque", cheque.name, "cleared_date"))
+
+    def test_unclear_requires_a_reason(self):
+        cheque = self._cleared_incoming()
+        with self.assertRaises(frappe.ValidationError):
+            e2e.act(cheque, "Un-clear")
+
+        cheque.reload()
+        self.assertEqual(cheque.status, "Cleared", "the cheque must not have moved")
+
+    def test_unclear_is_refused_to_a_non_system_manager(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque.cheque import change_cheque_status
+
+        cheque = self._cleared_incoming()
+        e2e.set_fields(cheque, unclear_reason="attempt by a treasury user")
+
+        frappe.set_user(PE_CLERK_USER)
+        try:
+            with self.assertRaises(frappe.PermissionError):
+                change_cheque_status(cheque.name, "Deposited")
+        finally:
+            frappe.set_user("Administrator")
+
+        self.assertEqual(frappe.db.get_value("Cheque", cheque.name, "status"), "Cleared")
+
+    def test_submitted_payment_entry_is_left_alone_and_flagged(self):
+        """Cancelling a submitted PE reverses GL entries and can break its own
+        downstream links — that decision belongs to a human, so we say so
+        instead of guessing."""
+        cheque = self._cleared_incoming()
+        pe_name = cheque.reference_name
+        self.assertEqual(
+            frappe.db.get_value("Payment Entry", pe_name, "docstatus"), 1, "PE should have posted"
+        )
+
+        e2e.set_fields(cheque, unclear_reason="Credited to the wrong account.")
+        e2e.act(cheque, "Un-clear")
+
+        self.assertEqual(
+            frappe.db.get_value("Payment Entry", pe_name, "docstatus"),
+            1,
+            "the Payment Entry must NOT be auto-cancelled",
+        )
+        flagged = next(
+            (n for n in self._notes(cheque.name) if "left submitted on un-clear" in (n or "")), None
+        )
+        self.assertIsNotNone(
+            flagged, f"the still-posted PE must be recorded: {self._notes(cheque.name)}"
+        )
+
+    def test_cannot_unclear_an_incoming_cheque_to_handed_over(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque.cheque import change_cheque_status
+
+        cheque = self._cleared_incoming()
+        e2e.set_fields(cheque, unclear_reason="wrong target")
+        with self.assertRaises(frappe.ValidationError):
+            change_cheque_status(cheque.name, "Handed Over")
+
+
+class TestReferenceEditAfterSubmit(FrappeTestCase):
+    """Attaching a missing accounting reference is routine; repointing one on a
+    submitted cheque moves the money to a different document after the fact."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ensure_payment_entry_workflow()
+        ensure_pe_users()
+
+    def setUp(self):
+        self.env = get_test_env()
+        frappe.set_user("Administrator")
+
+    def tearDown(self):
+        frappe.set_user("Administrator")
+
+    def test_reference_fields_are_editable_after_submit(self):
+        meta = frappe.get_meta("Cheque")
+        for field in ("reference_doctype", "reference_name"):
+            self.assertTrue(
+                meta.get_field(field).allow_on_submit,
+                f"{field} must be editable after submit (production bridges this with a Property Setter)",
+            )
+
+    def test_filling_an_empty_reference_is_allowed(self):
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        self.assertFalse(cheque.reference_name)
+
+        pe = e2e.attach_payment_entry(cheque)
+
+        self.assertEqual(
+            frappe.db.get_value("Cheque", cheque.name, "reference_name"),
+            pe.name,
+            "attaching a missing reference must be allowed",
+        )
+
+    def test_overwriting_a_reference_is_refused_to_a_non_system_manager(self):
+        cheque = e2e.make_incoming()
+        original = cheque.reference_name
+        self.assertTrue(original)
+
+        frappe.set_user(PE_CLERK_USER)
+        try:
+            cheque.reload()
+            cheque.reference_name = None
+            with self.assertRaises(frappe.PermissionError):
+                cheque.save()
+        finally:
+            frappe.set_user("Administrator")
+
+        self.assertEqual(frappe.db.get_value("Cheque", cheque.name, "reference_name"), original)
+
+    def test_system_manager_may_repoint_a_reference(self):
+        cheque = e2e.make_incoming()
+        self.assertTrue(cheque.reference_name)
+
+        cheque.reload()
+        cheque.reference_doctype = None
+        cheque.reference_name = None
+        cheque.flags.ignore_permissions = True
+        cheque.save(ignore_permissions=True)
+
+        self.assertFalse(frappe.db.get_value("Cheque", cheque.name, "reference_name"))
+
+    def test_amount_validation_still_applies_when_attaching(self):
+        """The edit relaxation must not open a hole in §4.5.3."""
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        pe = e2e.attach_payment_entry(cheque)
+
+        # Drift the cheque away from the PE it now points at.
+        cheque.reload()
+        cheque.amount = flt(cheque.amount) + 500
+        cheque.flags.ignore_permissions = True
+        with self.assertRaises(frappe.ValidationError):
+            cheque.save(ignore_permissions=True)

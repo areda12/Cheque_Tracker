@@ -261,3 +261,57 @@ account. Members without one now inherit the batch's, because depositing *is*
 naming the account the cheque goes into. The alternative — failing each member
 with "Bank Account is required" — would be a confusing way to say "this batch has
 no bank account".
+
+---
+
+## D15 — Cairo ships as static instances derived from the variable font
+
+`google/fonts` no longer publishes static Cairo faces: `ofl/cairo` contains only
+`Cairo[slnt,wght].ttf` and there is no `static/` directory. The three faces this
+app ships are instances pinned from that canonical binary at `wght` 400 / 600 /
+700 with `slnt = 0`, which is how Google's own `static/` folders are produced.
+
+Shipping the variable file directly would have been simpler and wrong: wkhtmltopdf
+embeds QtWebKit, which has no variable-font support, so SemiBold and Bold would
+have rendered identically to Regular. A test asserts the shipped faces carry no
+`fvar` table.
+
+TrueType rather than woff2 for the same reason — QtWebKit cannot read the modern
+compressed formats. The SIL OFL licence ships alongside the fonts.
+
+Worth recording: the formats already *named* `'Cairo'` in their font stack but
+never loaded it, so Arabic had been rendering in the Segoe UI / Tahoma fallback
+in the desk as well as in PDF. This is a fix, not just a PDF hardening.
+
+---
+
+## D16 — Un-clear does not touch the Payment Entry
+
+Reversing a clearance clears `cleared_date` and records who did it and why, but
+deliberately leaves a submitted Payment Entry alone.
+
+Auto-cancelling it would be the tidy-looking choice and the wrong one: cancelling
+a submitted PE reverses its GL entries and can break links held by documents the
+tracker cannot see — a reconciliation, an allocation against an invoice. That is
+an accounting decision with consequences beyond this app, so it belongs to a
+person. The un-clear tells them plainly, in a msgprint and on the timeline, that
+the PE is still posted and needs cancelling or amending by hand.
+
+The transition is System Manager only, and the reason is mandatory — a reversal
+with no explanation is worse than no reversal at all when someone audits it later.
+
+---
+
+## D17 — References may be attached after submit, but not repointed
+
+`reference_doctype` / `reference_name` became `allow_on_submit` because the v1.2
+clearance gate requires a Payment Entry, and cheques submitted before their PE
+existed had no way to get one. Production was bridging this with two Property
+Setters, which grant the edit with no rules attached.
+
+The app's version is bounded: after submit a reference may be **filled in when
+empty**, but changing or clearing one that is already set is System Manager only.
+Attaching a missing reference is routine bookkeeping; repointing a submitted
+cheque moves the money to a different document after the fact. The §4.5.3
+amount/party validation runs either way, so a reference cannot be attached that
+disagrees with the cheque.
