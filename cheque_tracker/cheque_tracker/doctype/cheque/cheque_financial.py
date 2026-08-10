@@ -1,142 +1,403 @@
 # Copyright (c) 2024, Ahmed Abbas and contributors
 # License: MIT
 """
-Cheque Tracker accounting helpers — both directions.
+Cheque Tracker accounting helpers.
 
-Cheque is the source of truth for in-flight cheques. The ONLY GL
-posting in the lifecycle is the Clearance JE.
+v1.2 model (BUILD_INSTRUCTIONS §4.5 — Ahmed's confirmed decision)
+-----------------------------------------------------------------
+**The Payment Entry stays DRAFT until the cheque is actually collected.** The
+receivable stays in `Debtors` until clearance; the tracker is the source of
+truth for the cheque itself.
 
-Incoming (selling side):
-  Clearance JE on workflow Clear (Deposited → Cleared):
-      Dr  Bank GL                          (no party)
-      Cr  Debtors  OR  Advance Received    (party=Customer; ref=SI or SO)
+Consequently **the tracker posts nothing to the general ledger** (§4.5.5). The
+linked Payment Entry is the only posting document, and it posts once, when the
+cheque clears and the PE is submitted.
 
-Outgoing (buying side):
-  Clearance JE on workflow Clear (Handed Over → Cleared):
-      Dr  Creditors  OR  Advances Paid     (party=Supplier; ref=PI or PO)
-      Cr  Bank GL                          (no party)
+That is a deliberate reversal of the v1.1.x "clearance-only" model, which posted
+its own Journal Entry (Dr Bank / Cr Debtors) on the Clear action. Keeping both
+would have double-posted every collection: the JE and the submitted Payment
+Entry describe the same event. `make_clearance_je` is therefore gone;
+`cancel_clearance_je` stays, because cheques cleared under v1.1.x still carry a
+`clearance_je` link that must be unwound if they are ever cancelled.
 
-Submit, Deposit, Hand Over, Bounce, Return, Cancel Cheque are pure
-status changes with no GL effect.
+A cheque with no linked Payment Entry produces no accounting entry at all when
+it clears. That is the documented v1.2 behaviour, not an oversight — but it is
+announced loudly (see `settle_linked_payment_entry`) rather than passing in
+silence, because an untracked collection is exactly the kind of thing that
+should not be discovered at year end.
 """
 
 import frappe
 from frappe import _
 
 
-def _resolve_credit_account(cheque):
-    """For Incoming Clearance JE — Cr side."""
-    if cheque.reference_doctype == "Sales Order":
-        adv = frappe.get_cached_value(
-            "Company", cheque.company, "default_advance_received_account"
+# Fields whose disagreement between a Cheque and its Payment Entry is a hard
+# error rather than a warning.
+_AMOUNT_TOLERANCE = 0.005
+
+
+def validate_payment_entry_link(cheque):
+    """§4.5.3 — sanity-check a Cheque against the Payment Entry it points at.
+
+    Amount mismatch throws: the PE is what will hit the ledger, so letting the
+    two drift means the cheque record stops describing the money that moved.
+    Party and cheque number mismatches only warn — a payment can legitimately be
+    keyed against a group party, and the bank's reference formatting varies.
+    """
+    if cheque.reference_doctype != "Payment Entry" or not cheque.reference_name:
+        return
+
+    pe = frappe.db.get_value(
+        "Payment Entry",
+        cheque.reference_name,
+        ["paid_amount", "party", "party_type", "reference_no", "docstatus", "company"],
+        as_dict=True,
+    )
+    if not pe:
+        return
+
+    if abs(frappe.utils.flt(pe.paid_amount) - frappe.utils.flt(cheque.amount)) > _AMOUNT_TOLERANCE:
+        frappe.throw(
+            _(
+                "Amount mismatch: Cheque {0} is {1} but Payment Entry {2} is {3}. "
+                "The Payment Entry is what posts to the ledger — correct one of them."
+            ).format(
+                cheque.name or _("(new)"),
+                frappe.utils.fmt_money(cheque.amount, currency=cheque.currency),
+                cheque.reference_name,
+                frappe.utils.fmt_money(pe.paid_amount, currency=cheque.currency),
+            ),
+            frappe.ValidationError,
+            title=_("Cheque does not match its Payment Entry"),
         )
-        if not adv:
-            frappe.throw(_("Company has no default Advance Received account configured."))
-        return adv
-    return frappe.get_cached_value(
-        "Company", cheque.company, "default_receivable_account"
+
+    if pe.party and cheque.party and pe.party != cheque.party:
+        frappe.msgprint(
+            _("Party differs: Cheque {0} is {1}, Payment Entry {2} is {3}.").format(
+                cheque.name or _("(new)"), cheque.party, cheque.reference_name, pe.party
+            ),
+            indicator="orange",
+            alert=True,
+        )
+
+    if pe.reference_no and cheque.cheque_no and pe.reference_no != cheque.cheque_no:
+        frappe.msgprint(
+            _("Cheque No differs: Cheque {0} is {1}, Payment Entry reference is {2}.").format(
+                cheque.name or _("(new)"), cheque.cheque_no, pe.reference_no
+            ),
+            indicator="orange",
+            alert=True,
+        )
+
+
+def validate_duplicate_cheque(cheque):
+    """§4.5.4 — one physical cheque, one record.
+
+    Keyed on cheque_no + drawee_bank + cheque_type, ignoring cancelled records
+    so a corrected re-entry is still possible.
+    """
+    if not cheque.cheque_no or not cheque.cheque_type:
+        return
+
+    if not cheque.drawee_bank:
+        # The key §4.5.4 defines is cheque_no + drawee_bank + cheque_type. Without
+        # a drawee bank that key is incomplete, and matching on the number alone
+        # would reject legitimate cheques: two banks hand out cheque number 9100
+        # all the time. Incoming cheques always have one (before_save requires
+        # it); Outgoing cheques that do not are already protected by the unique
+        # index on Cheque Leaf (cheque_book + cheque_no), which is the stronger
+        # guarantee anyway.
+        return
+
+    filters = {
+        "cheque_no": cheque.cheque_no,
+        "cheque_type": cheque.cheque_type,
+        "drawee_bank": cheque.drawee_bank,
+        "docstatus": ["<", 2],
+    }
+    if cheque.name:
+        filters["name"] = ["!=", cheque.name]
+
+    existing = frappe.db.get_value("Cheque", filters, ["name", "status"], as_dict=True)
+    if not existing:
+        return
+
+    frappe.throw(
+        _(
+            "Cheque {0} already records cheque number {1} on {2} ({3}, currently {4}). "
+            "Cancel that record first if this is a correction."
+        ).format(
+            existing.name,
+            cheque.cheque_no,
+            cheque.drawee_bank or _("(no drawee bank)"),
+            cheque.cheque_type,
+            existing.status,
+        ),
+        frappe.DuplicateEntryError,
+        title=_("Duplicate cheque"),
     )
 
 
-def _resolve_debit_account(cheque):
-    """For Outgoing Clearance JE — Dr side."""
-    if cheque.reference_doctype == "Purchase Order":
-        adv = frappe.get_cached_value(
-            "Company", cheque.company, "default_advance_paid_account"
+def validate_endorsement(cheque):
+    """§4.3 — an endorsed cheque must name who it was endorsed to."""
+    if cheque.status != "Endorsed":
+        return
+
+    if cheque.cheque_type != "Incoming":
+        frappe.throw(_("Only Incoming cheques can be endorsed."), frappe.ValidationError)
+
+    if not cheque.endorsed_to_party_type:
+        frappe.throw(
+            _("Endorsed To Party Type is required to endorse a cheque."),
+            frappe.ValidationError,
         )
-        if not adv:
-            frappe.throw(_("Company has no default Advance Paid account configured."))
-        return adv
-    return frappe.get_cached_value(
-        "Company", cheque.company, "default_payable_account"
+
+    if cheque.endorsed_to_party_type == "Other":
+        if not cheque.endorsed_to_other_name:
+            frappe.throw(
+                _("Endorsed To (Name) is required when the counterparty is 'Other'."),
+                frappe.ValidationError,
+            )
+    elif not cheque.endorsed_to_party:
+        frappe.throw(
+            _("Endorsed To is required to endorse a cheque."), frappe.ValidationError
+        )
+
+    if not cheque.endorsement_date:
+        frappe.throw(_("Endorsement Date is required."), frappe.ValidationError)
+
+    _validate_endorsement_payment_entry(cheque)
+
+
+def _validate_endorsement_payment_entry(cheque):
+    """The endorsement PE is not created for us (§4.3), but if someone links one
+    its amount must agree — an endorsement that pays a different sum than the
+    cheque is worth is a data-entry error."""
+    if not cheque.endorsement_payment_entry:
+        return
+
+    pe = frappe.db.get_value(
+        "Payment Entry", cheque.endorsement_payment_entry, ["paid_amount", "docstatus"], as_dict=True
+    )
+    if not pe:
+        return
+
+    if abs(frappe.utils.flt(pe.paid_amount) - frappe.utils.flt(cheque.amount)) > _AMOUNT_TOLERANCE:
+        frappe.throw(
+            _(
+                "Endorsement Payment Entry {0} is for {1}, but this cheque is {2}."
+            ).format(
+                cheque.endorsement_payment_entry,
+                frappe.utils.fmt_money(pe.paid_amount, currency=cheque.currency),
+                frappe.utils.fmt_money(cheque.amount, currency=cheque.currency),
+            ),
+            frappe.ValidationError,
+        )
+
+
+def validate_bounce(cheque):
+    """§4.4 — a bounce without a reason is not actionable."""
+    if cheque.status == "Bounced" and not cheque.bounce_reason:
+        frappe.throw(
+            _("Bounce Reason is required when bouncing a cheque."),
+            frappe.ValidationError,
+        )
+
+
+def settle_linked_payment_entry(cheque):
+    """§4.5.2 — the cheque cleared, so the money really moved: submit the PE.
+
+    Returns a short status string for the caller to log:
+      "submitted"  — the draft PE was submitted (this is the GL posting)
+      "already"    — the PE was already submitted; clearance_date stamped
+      "pending"    — the acting user may not submit it; a ToDo was raised
+      "none"       — no Payment Entry is linked
+    """
+    if cheque.reference_doctype != "Payment Entry" or not cheque.reference_name:
+        frappe.msgprint(
+            _(
+                "Cheque {0} cleared with no linked Payment Entry, so nothing was posted "
+                "to the ledger. Record the collection separately."
+            ).format(cheque.name),
+            title=_("No accounting entry"),
+            indicator="orange",
+        )
+        return "none"
+
+    if not frappe.db.exists("Payment Entry", cheque.reference_name):
+        return "none"
+
+    pe = frappe.get_doc("Payment Entry", cheque.reference_name)
+
+    if pe.docstatus == 2:
+        frappe.throw(
+            _("Payment Entry {0} is cancelled — it cannot settle cheque {1}.").format(
+                pe.name, cheque.name
+            ),
+            frappe.ValidationError,
+        )
+
+    if pe.docstatus == 1:
+        # Already posted: just stamp the bank clearance date.
+        if cheque.cleared_date and pe.get("clearance_date") != cheque.cleared_date:
+            pe.db_set("clearance_date", cheque.cleared_date, update_modified=False)
+        return "already"
+
+    if not _can_submit_payment_entry(pe):
+        _raise_submission_todo(cheque, pe)
+        return "pending"
+
+    pe.flags.ignore_permissions = True
+    _submit_through_workflow(pe)
+
+    pe.reload()
+    if pe.docstatus == 1 and cheque.cleared_date:
+        pe.db_set("clearance_date", cheque.cleared_date, update_modified=False)
+
+    if pe.docstatus != 1:
+        # A workflow moved it forward but not all the way to submitted.
+        _raise_submission_todo(cheque, pe)
+        return "pending"
+
+    return "submitted"
+
+
+def _payment_entry_workflow():
+    return frappe.db.get_value(
+        "Workflow", {"document_type": "Payment Entry", "is_active": 1}, "name"
     )
 
 
-def _bank_gl_account(cheque):
-    """Resolve the bank's GL account from the Bank Account link on the cheque."""
-    if not cheque.bank_account:
-        frappe.throw(_("Cheque has no Bank Account set; cannot post Clearance JE."))
-    bank_gl = frappe.db.get_value("Bank Account", cheque.bank_account, "account")
-    if not bank_gl:
-        frappe.throw(_("Bank Account {0} has no GL account linked.").format(cheque.bank_account))
-    return bank_gl
+def _can_submit_payment_entry(pe):
+    """Whether the acting user may actually push this PE to submitted.
+
+    With an approval workflow in play (production has an "Approval Pending by
+    Accounting Manager" gate) submit permission is not enough — the user also
+    needs a transition that lands on a docstatus-1 state.
+    """
+    if not frappe.has_permission("Payment Entry", "submit", doc=pe):
+        return False
+
+    if not _payment_entry_workflow():
+        return True
+
+    return bool(_submitting_transition(pe))
 
 
-def make_clearance_je(cheque):
-    """Submit the Clearance JE. Direction-aware.
-    This is the ONLY GL posting in either cheque lifecycle."""
-    if cheque.clearance_je:
-        frappe.throw(_("Clearance JE already exists: {0}").format(cheque.clearance_je))
+def _submitting_transition(pe):
+    from frappe.model.workflow import get_transitions
 
-    bank_gl = _bank_gl_account(cheque)
+    workflow_name = _payment_entry_workflow()
+    if not workflow_name:
+        return None
 
-    je = frappe.new_doc("Journal Entry")
-    je.voucher_type = "Bank Entry"
-    je.posting_date = cheque.cleared_date or frappe.utils.today()
-    je.company = cheque.company
-    je.cheque_no = cheque.cheque_no
-    je.cheque_date = cheque.issue_date
-    direction = "received from" if cheque.cheque_type == "Incoming" else "issued to"
-    je.user_remark = (
-        f"Cheque #{cheque.cheque_no} cleared, {direction} {cheque.party} "
-        f"for {cheque.reference_doctype or 'no reference'} "
-        f"{cheque.reference_name or ''} (Cheque doc: {cheque.name})"
-    ).strip()
+    workflow = frappe.get_doc("Workflow", workflow_name)
+    submitted_states = {s.state for s in workflow.states if str(s.doc_status) == "1"}
 
-    if cheque.cheque_type == "Incoming":
-        # Dr Bank / Cr Debtors|Advance Received
-        credit_acc = _resolve_credit_account(cheque)
-        is_so_advance = cheque.reference_doctype == "Sales Order"
+    for transition in get_transitions(pe, workflow) or []:
+        if transition.get("next_state") in submitted_states:
+            return transition
+    return None
 
-        je.append("accounts", {
-            "account": bank_gl,
-            "debit_in_account_currency": cheque.amount,
-            "credit_in_account_currency": 0,
-        })
-        cr_row = {
-            "account": credit_acc,
-            "party_type": cheque.party_type,
-            "party": cheque.party,
-            "debit_in_account_currency": 0,
-            "credit_in_account_currency": cheque.amount,
+
+def _submit_through_workflow(pe):
+    """Submit the PE, going through its workflow when one is active.
+
+    §4.5.2 is explicit that the workflow must be respected rather than
+    circumvented — a forced `pe.submit()` would step around the approval gate
+    the finance team put there on purpose.
+    """
+    if not _payment_entry_workflow():
+        pe.submit()
+        return
+
+    from frappe.model.workflow import apply_workflow
+
+    transition = _submitting_transition(pe)
+    if not transition:
+        return
+    apply_workflow(pe, transition.get("action"))
+
+
+def _raise_submission_todo(cheque, pe):
+    """Leave the cheque Cleared, flag it, and put the PE on someone's desk."""
+    cheque.db_set("pe_pending_submission", 1, update_modified=False)
+
+    owner = _pending_approver(pe)
+    description = _(
+        "Cheque {0} cleared on {1}. Its Payment Entry {2} is still a draft and "
+        "could not be submitted automatically — {3} lacks the required approval "
+        "role. Submit {2} to post the collection."
+    ).format(cheque.name, cheque.cleared_date or frappe.utils.today(), pe.name, frappe.session.user)
+
+    existing = frappe.db.get_value(
+        "ToDo",
+        {
+            "reference_type": "Payment Entry",
+            "reference_name": pe.name,
+            "status": "Open",
+            "allocated_to": owner,
+        },
+        "name",
+    )
+    if not existing:
+        todo = frappe.get_doc(
+            {
+                "doctype": "ToDo",
+                "allocated_to": owner,
+                "reference_type": "Payment Entry",
+                "reference_name": pe.name,
+                "description": description,
+                "priority": "High",
+                "date": frappe.utils.today(),
+            }
+        )
+        todo.flags.ignore_permissions = True
+        todo.insert(ignore_permissions=True)
+
+    frappe.msgprint(
+        description,
+        title=_("Payment Entry pending submission"),
+        indicator="orange",
+    )
+
+
+def _pending_approver(pe):
+    """Best available owner for the follow-up ToDo.
+
+    Prefers a user who actually holds a role allowed to move the PE forward,
+    then the PE's owner, then the Administrator — never nobody, or the ToDo
+    silently belongs to no one.
+    """
+    workflow_name = _payment_entry_workflow()
+    if workflow_name:
+        workflow = frappe.get_doc("Workflow", workflow_name)
+        submitted_states = {s.state for s in workflow.states if str(s.doc_status) == "1"}
+        state_field = workflow.workflow_state_field
+        current_state = pe.get(state_field)
+
+        allowed_roles = {
+            t.allowed
+            for t in workflow.transitions
+            if t.state == current_state and t.next_state in submitted_states and t.allowed
         }
-        if cheque.reference_doctype and cheque.reference_name:
-            cr_row["reference_type"] = cheque.reference_doctype
-            cr_row["reference_name"] = cheque.reference_name
-        if is_so_advance:
-            cr_row["is_advance"] = "Yes"
-        je.append("accounts", cr_row)
+        for role in sorted(allowed_roles):
+            holder = frappe.db.sql(
+                """
+                SELECT hr.parent
+                FROM `tabHas Role` hr
+                JOIN `tabUser` u ON u.name = hr.parent
+                WHERE hr.role = %s AND hr.parenttype = 'User'
+                  AND u.enabled = 1 AND u.name NOT IN ('Administrator', 'Guest')
+                ORDER BY u.name
+                LIMIT 1
+                """,
+                role,
+            )
+            if holder:
+                return holder[0][0]
 
-    else:  # Outgoing
-        # Dr Creditors|Advances Paid / Cr Bank
-        debit_acc = _resolve_debit_account(cheque)
-        is_po_advance = cheque.reference_doctype == "Purchase Order"
-
-        dr_row = {
-            "account": debit_acc,
-            "party_type": cheque.party_type,
-            "party": cheque.party,
-            "debit_in_account_currency": cheque.amount,
-            "credit_in_account_currency": 0,
-        }
-        if cheque.reference_doctype and cheque.reference_name:
-            dr_row["reference_type"] = cheque.reference_doctype
-            dr_row["reference_name"] = cheque.reference_name
-        if is_po_advance:
-            dr_row["is_advance"] = "Yes"
-        je.append("accounts", dr_row)
-        je.append("accounts", {
-            "account": bank_gl,
-            "debit_in_account_currency": 0,
-            "credit_in_account_currency": cheque.amount,
-        })
-
-    je.flags.ignore_permissions = True
-    je.insert()
-    je.submit()
-
-    cheque.db_set("clearance_je", je.name, update_modified=False)
-    return je.name
+    return pe.owner or "Administrator"
 
 
 def validate_replacement_candidate(original, replacement):

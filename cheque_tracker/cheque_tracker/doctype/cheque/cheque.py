@@ -18,9 +18,12 @@ from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
 # log_status_change) so an event row looks identical whichever fired.
 STATUS_EVENT_MAP = {
     "Received":    "Received",
+    "Issued":      "Issued",
     "In Safe":     "In Safe",
     "Deposited":   "Deposited",
+    "Endorsed":    "Endorsed",
     "Handed Over": "Handed Over",
+    "Presented":   "Presented",
     "Cleared":     "Cleared",
     "Bounced":     "Bounced",
     "Returned":    "Returned",
@@ -28,10 +31,22 @@ STATUS_EVENT_MAP = {
     "Replaced":    "Replaced",
 }
 
+# §4.1 — the two lifecycles. Incoming cheques arrive from a customer; outgoing
+# ones are drawn by us. Forcing outgoing cheques through incoming language is
+# what put an issued cheque in "Received" and broke the dashboard filters.
+INCOMING_STATUSES = {
+    "Draft", "Received", "In Safe", "Deposited", "Endorsed",
+    "Cleared", "Bounced", "Returned", "Cancelled", "Replaced",
+}
+OUTGOING_STATUSES = {
+    "Draft", "Issued", "In Safe", "Handed Over", "Presented",
+    "Cleared", "Bounced", "Returned", "Cancelled", "Replaced",
+}
+
 # Statuses at which the cheque has physically left the company. current_holder
 # is a Link to User and cannot name an external payee, so it is cleared rather
 # than left pointing at the employee who last held it (§3.2.7a).
-EXTERNAL_CUSTODY_STATUSES = {"Handed Over"}
+EXTERNAL_CUSTODY_STATUSES = {"Handed Over", "Endorsed", "Presented"}
 
 
 class Cheque(Document):
@@ -63,18 +78,43 @@ class Cheque(Document):
     def before_save(self):
         if self.cheque_type == "Outgoing":
             self._handle_outgoing_leaf_reservation()
+        self._validate_outgoing_cheque_no()
+        cheque_financial.validate_duplicate_cheque(self)
+        cheque_financial.validate_payment_entry_link(self)
+
+    def before_update_after_submit(self):
+        """Gate submitted-state transitions BEFORE the row is written.
+
+        A workflow action on a submitted document routes through doc.save(), so
+        `validate()` never runs (frappe/model/document.py:1402-1411) — business
+        rules for these transitions have to live here or they simply do not fire.
+        """
+        before = self.get_doc_before_save()
+        if before and before.status != self.status:
+            _validate_status_requirements(self, self.status)
+        cheque_financial.validate_payment_entry_link(self)
+
+    def before_submit(self):
+        # Which bank the cheque is drawn on is required to track an incoming
+        # cheque, but only from submit onward. It used to be enforced on every
+        # save, which made a Draft cheque impossible to create from a Payment
+        # Entry (§4.5.1) — the PE records the cheque number in `reference_no`
+        # but has nowhere to say which bank issued it. A clerk fills it in before
+        # submitting; the guarantee is unchanged for any cheque that matters.
         if self.cheque_type == "Incoming" and not self.drawee_bank:
             frappe.throw(
                 _("Drawee Bank is required for Incoming cheques."),
                 frappe.ValidationError,
             )
-        self._validate_outgoing_cheque_no()
 
-    def before_submit(self):
-        # Submit transitions Draft → Received for both directions with NO
-        # GL effect. The Clearance JE on workflow Clear is the only GL
-        # posting in the lifecycle.
-        self.status = "Received"
+        # Draft → Received (Incoming) / Issued (Outgoing), with no GL effect.
+        #
+        # This must set a status that IS a workflow state with doc_status 1.
+        # frappe.model.workflow.set_workflow_state_on_action force-overwrites the
+        # state field on any submit — but it returns early when the document is
+        # already in a state matching the target docstatus, and before_submit runs
+        # before _validate (frappe/model/document.py:479-480), so this wins.
+        self.status = "Issued" if self.cheque_type == "Outgoing" else "Received"
 
     def on_submit(self):
         if self.cheque_type == "Outgoing":
@@ -220,26 +260,41 @@ class Cheque(Document):
 
         self._flush_events()
 
-        # Workflow-driven GL side effects.
-        # has_value_changed reads from _doc_before_save — set reliably by
-        # the framework before this hook runs, even on workflow saves.
         if not status_changed:
             return
 
-        old, new = before.status, self.status
+        # Settlement (§4.5.2). The tracker posts no GL of its own in v1.2 — the
+        # linked Payment Entry is the only posting document, and clearing the
+        # cheque is what submits it. Every other transition is status-only.
+        if self.status == "Cleared":
+            self._settle_on_clear()
 
-        # The only GL transition — direction-aware:
-        #   Incoming: Deposited   → Cleared
-        #   Outgoing: Handed Over → Cleared
-        # All other transitions (Bounce, Return, Cancel Cheque) are status-only —
-        # nothing was posted on Submit, so there is nothing to reverse.
-        expected_pre_clear = "Deposited" if self.cheque_type == "Incoming" else "Handed Over"
-        if new == "Cleared" and old == expected_pre_clear:
-            if not self.cleared_date:
-                frappe.throw(_("Set Cleared Date before marking as Cleared."))
-            if not self.bank_account:
-                frappe.throw(_("Set Bank Account before marking as Cleared."))
-            cheque_financial.make_clearance_je(self)
+
+    def _settle_on_clear(self):
+        """The cheque was collected: stamp the date and settle the Payment Entry."""
+        if not self.cleared_date:
+            self.db_set("cleared_date", today(), update_modified=False)
+
+        outcome = cheque_financial.settle_linked_payment_entry(self)
+
+        notes = {
+            "submitted": f"Payment Entry {self.reference_name} submitted on clearance.",
+            "already":   f"Payment Entry {self.reference_name} was already submitted; clearance date stamped.",
+            "pending":   f"Payment Entry {self.reference_name} could not be submitted by {frappe.session.user}; a ToDo was raised for the approver.",
+            "none":      "Cleared with no linked Payment Entry — nothing was posted to the ledger.",
+        }.get(outcome)
+
+        if notes:
+            self._append_event(
+                "Note",
+                notes=notes,
+                reference_doctype="Payment Entry" if outcome != "none" else None,
+                reference_name=self.reference_name if outcome != "none" else None,
+            )
+            self._flush_events()
+
+        if outcome == "submitted" and self.pe_pending_submission:
+            self.db_set("pe_pending_submission", 0, update_modified=False)
 
     # ------------------------------------------------------------------ #
     #  Leaf reservation (Outgoing)                                         #
@@ -477,6 +532,8 @@ class Cheque(Document):
         location=None,
         notes=None,
         attachment=None,
+        reference_doctype=None,
+        reference_name=None,
     ):
         if not isinstance(getattr(self, "events", None), list):
             self.events = []
@@ -488,6 +545,8 @@ class Cheque(Document):
                 "from_holder":    from_holder,
                 "to_holder":      to_holder or frappe.session.user,
                 "location":       location,
+                "reference_doctype": reference_doctype,
+                "reference_name":    reference_name,
                 "notes":          notes,
                 "attachment":     attachment,
             },
@@ -558,28 +617,125 @@ class Cheque(Document):
 # Workflow-role gating for change_cheque_status. Pairs (from_status,
 # to_status) not present here fall through to the per-status validation
 # logic in _validate_transition.
+_TREASURY = {"Treasury User", "System Manager"}
+_ACCOUNTS = {"Accounts User", "System Manager"}
+
+# Role gating for change_cheque_status, mirroring fixtures/workflow.json.
+# Treasury moves custody; Accounts clears (the clearing action is what submits
+# the Payment Entry, i.e. what posts to the ledger).
 _TRANSITION_ROLES = {
-    ("Draft", "Received"):         {"Treasury User", "System Manager"},
-    # Incoming-only forwards
-    ("Received", "Deposited"):     {"Treasury User", "System Manager"},
-    ("In Safe", "Deposited"):      {"Treasury User", "System Manager"},
-    ("Deposited", "Cleared"):      {"Accounts User", "System Manager"},
-    ("Deposited", "Bounced"):      {"Treasury User", "System Manager"},
-    ("Deposited", "Returned"):     {"Treasury User", "System Manager"},
-    # Outgoing-only forwards
-    ("Received", "Handed Over"):   {"Treasury User", "System Manager"},
-    ("In Safe", "Handed Over"):    {"Treasury User", "System Manager"},
-    ("Handed Over", "Cleared"):    {"Accounts User", "System Manager"},
-    ("Handed Over", "Bounced"):    {"Treasury User", "System Manager"},
-    ("Handed Over", "Returned"):   {"Treasury User", "System Manager"},
-    # Shared transitions
-    ("Received", "In Safe"):       {"Treasury User", "System Manager"},
-    ("Received", "Returned"):      {"Treasury User", "System Manager"},
-    ("Received", "Cancelled"):     {"Treasury User", "System Manager"},
-    ("In Safe", "Returned"):       {"Treasury User", "System Manager"},
-    ("In Safe", "Cancelled"):      {"Treasury User", "System Manager"},
-    ("Bounced", "Replaced"):       {"Treasury User", "System Manager"},
+    # ---- Incoming ----------------------------------------------------
+    ("Draft", "Received"):         _TREASURY,
+    ("Received", "In Safe"):       _TREASURY,
+    ("Received", "Deposited"):     _TREASURY,
+    ("In Safe", "Deposited"):      _TREASURY,
+    ("Received", "Endorsed"):      _TREASURY,
+    ("In Safe", "Endorsed"):       _TREASURY,
+    ("Received", "Cleared"):       _ACCOUNTS,   # cash clearance (§4.2)
+    ("In Safe", "Cleared"):        _ACCOUNTS,   # cash clearance (§4.2)
+    ("Deposited", "Cleared"):      _ACCOUNTS,
+    ("Deposited", "Bounced"):      _TREASURY,
+    ("Deposited", "Returned"):     _TREASURY,
+    ("Endorsed", "Cleared"):       _ACCOUNTS,
+    ("Endorsed", "Bounced"):       _TREASURY,
+    ("Bounced", "Deposited"):      _TREASURY,   # re-deposit (§4.4)
+    # ---- Outgoing ----------------------------------------------------
+    ("Draft", "Issued"):           _TREASURY,
+    ("Issued", "Handed Over"):     _TREASURY,
+    ("In Safe", "Handed Over"):    _TREASURY,
+    ("Handed Over", "Presented"):  _TREASURY,
+    ("Handed Over", "Cleared"):    _ACCOUNTS,
+    ("Presented", "Cleared"):      _ACCOUNTS,
+    ("Handed Over", "Bounced"):    _TREASURY,
+    ("Presented", "Bounced"):      _TREASURY,
+    ("Handed Over", "Returned"):   _TREASURY,
+    ("Presented", "Returned"):     _TREASURY,
+    # ---- Shared ------------------------------------------------------
+    ("Received", "Returned"):      _TREASURY,
+    ("Received", "Cancelled"):     _TREASURY,
+    ("In Safe", "Returned"):       _TREASURY,
+    ("In Safe", "Cancelled"):      _TREASURY,
+    ("Issued", "Returned"):        _TREASURY,
+    ("Issued", "Cancelled"):       _TREASURY,
+    ("Bounced", "Replaced"):       _TREASURY,
 }
+
+
+def _validate_status_requirements(doc, new_status: str):
+    """Preconditions for landing in `new_status`, shared by both paths.
+
+    Called from `before_update_after_submit` (workflow saves) and from
+    `_validate_transition` (the whitelisted UI endpoint), so a rule cannot be
+    satisfied on one route and skipped on the other.
+    """
+    if new_status in INCOMING_STATUSES and new_status not in OUTGOING_STATUSES:
+        if doc.cheque_type != "Incoming":
+            frappe.throw(
+                _("{0} is an Incoming-only status.").format(new_status),
+                frappe.ValidationError,
+            )
+    if new_status in OUTGOING_STATUSES and new_status not in INCOMING_STATUSES:
+        if doc.cheque_type != "Outgoing":
+            frappe.throw(
+                _("{0} is an Outgoing-only status.").format(new_status),
+                frappe.ValidationError,
+            )
+
+    if new_status in ("In Safe", "Deposited", "Handed Over", "Endorsed", "Presented"):
+        if not doc.company or not doc.party or not doc.amount:
+            frappe.throw(
+                _("Company, Party, and Amount are required before moving to {0}.").format(
+                    new_status
+                ),
+                frappe.ValidationError,
+            )
+
+    if new_status == "Deposited":
+        if doc.clearance_type == "Cash":
+            frappe.throw(
+                _(
+                    "Cannot deposit a cheque whose Clearance Type is Cash. "
+                    "Cash cheques clear directly via the Cash Clear action."
+                ),
+                frappe.ValidationError,
+            )
+        if not doc.bank_account:
+            frappe.throw(
+                _("Bank Account is required before marking as Deposited."),
+                frappe.ValidationError,
+            )
+
+    if new_status == "Cleared":
+        if doc.clearance_type == "Cash":
+            if not doc.cash_account:
+                frappe.throw(
+                    _("Cash Account is required to clear a cash cheque."),
+                    frappe.ValidationError,
+                )
+        elif not doc.bank_account:
+            frappe.throw(
+                _("Bank Account is required before marking as Cleared."),
+                frappe.ValidationError,
+            )
+
+    if new_status == "Endorsed":
+        cheque_financial.validate_endorsement(_with_status(doc, "Endorsed"))
+
+    if new_status == "Bounced":
+        cheque_financial.validate_bounce(_with_status(doc, "Bounced"))
+
+
+def _with_status(doc, status):
+    """A view of `doc` as if it were already in `status`.
+
+    The validators read `doc.status` so they work equally on a saved document;
+    on the UI path the status has not been written yet.
+    """
+    if doc.status == status:
+        return doc
+    shadow = frappe._dict(doc.as_dict())
+    shadow.status = status
+    return shadow
 
 
 @frappe.whitelist()
@@ -589,6 +745,15 @@ def change_cheque_status(cheque_name: str, new_status: str, notes: str = ""):
     frappe.has_permission("Cheque", "write", doc=doc, throw=True)
     _validate_transition(doc, new_status, notes)
     doc.log_status_change(new_status, notes=notes)
+
+    # Clearing is what settles the Payment Entry. This endpoint writes with
+    # frappe.db.set_value, which never reaches on_update_after_submit, so the
+    # settlement has to be invoked explicitly — otherwise a cheque could be
+    # marked Cleared through the UI with its PE left sitting in draft.
+    if new_status == "Cleared":
+        doc.reload()
+        doc._settle_on_clear()
+
     return {"status": "ok", "new_status": new_status}
 
 
@@ -608,38 +773,7 @@ def _validate_transition(doc, new_status: str, notes: str):
                 title=_("Insufficient role for cheque transition"),
             )
 
-    if new_status in ("In Safe", "Deposited", "Handed Over"):
-        if not doc.company or not doc.party or not doc.amount:
-            frappe.throw(
-                _("Company, Party, and Amount are required before moving to {0}.").format(
-                    new_status
-                ),
-                frappe.ValidationError,
-            )
-    if doc.clearance_type == "Cash" and new_status == "Deposited":
-        frappe.throw(
-            _("Cannot mark as {0} when Clearance Type is Cash. "
-              "Cash cheques go directly from In Safe → Cleared via the clearance entry.").format(
-                new_status
-            ),
-            frappe.ValidationError,
-        )
-    if new_status == "Deposited":
-        if doc.cheque_type != "Incoming":
-            frappe.throw(
-                _("Only Incoming cheques can be Deposited."),
-                frappe.ValidationError,
-            )
-        if not doc.bank_account:
-            frappe.throw(
-                _("Bank Account is required before marking as Deposited."),
-                frappe.ValidationError,
-            )
-    if new_status == "Handed Over" and doc.cheque_type != "Outgoing":
-        frappe.throw(
-            _("Only Outgoing cheques can be Handed Over."),
-            frappe.ValidationError,
-        )
+    _validate_status_requirements(doc, new_status)
 
 
 @frappe.whitelist()

@@ -35,11 +35,16 @@ fixtures = [
                 "in",
                 [
                     "Receive",
+                    "Issue",
                     "Move to Safe",
                     "Deposit",
+                    "Cash Clear",
+                    "Endorse",
                     "Hand Over",
+                    "Present",
                     "Clear",
                     "Bounce",
+                    "Re-deposit",
                     "Return",
                     "Replace",
                     "Cancel Cheque",
@@ -109,10 +114,18 @@ scheduler_events = {
 # Selling-side accounting is now JE-only and Cheque-doc-driven (Cheque
 # actions create/cancel JEs as side effects), so Payment Entry and
 # Journal Entry no longer need doc_event hooks here.
+#
+# v1.2: Payment Entry gained hooks again, but for a different purpose than the
+# deleted v1.1.4 ones. They do not post anything — they mirror a draft PE paid by
+# cheque into a Draft Cheque so the tracker knows about it (§4.5.1). The GL stays
+# entirely with the Payment Entry.
 doc_events = {
     "Cheque Book": {
         "on_submit": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_submit",
         "on_cancel": "cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book.on_cancel",
+    },
+    "Payment Entry": {
+        "on_update": "cheque_tracker.cheque_tracker.doctype.cheque.payment_entry_sync.on_payment_entry_update",
     },
 }
 
