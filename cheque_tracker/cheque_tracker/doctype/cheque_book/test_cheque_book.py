@@ -7,6 +7,7 @@ from frappe.tests.utils import FrappeTestCase
 from cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book import (
     get_book_counters,
 )
+from cheque_tracker.tests.utils import get_test_env
 
 
 # ------------------------------------------------------------------ #
@@ -15,17 +16,21 @@ from cheque_tracker.cheque_tracker.doctype.cheque_book.cheque_book import (
 
 def make_cheque_book(start=1, end=10, company=None, bank_account=None,
                      sequence_type="Numeric", digits_count=0, prefix="", suffix=""):
+    # Resolve through the pinned test environment rather than
+    # `get_all(..., limit=1)`, which is ordered by `modified desc` and so
+    # picked a different company on every run.
+    env = get_test_env()
     if not company:
-        rows = frappe.get_all("Company", limit=1)
-        if not rows:
-            raise RuntimeError("No Company found in test DB")
-        company = rows[0].name
+        company = env["company"]
 
     if not bank_account:
-        rows = frappe.get_all("Bank Account", filters={"company": company}, limit=1)
-        if not rows:
-            raise RuntimeError(f"No Bank Account found for company {company}")
-        bank_account = rows[0].name
+        if company == env["company"]:
+            bank_account = env["bank_account"]
+        else:
+            rows = frappe.get_all("Bank Account", filters={"company": company}, limit=1)
+            if not rows:
+                raise RuntimeError(f"No Bank Account found for company {company}")
+            bank_account = rows[0].name
 
     cb = frappe.new_doc("Cheque Book")
     cb.company       = company
@@ -96,17 +101,20 @@ class TestChequeBook(FrappeTestCase):
         )
 
     def test_bank_account_company_mismatch_raises(self):
-        companies = frappe.get_all("Company", limit=2)
-        if len(companies) < 2:
-            self.skipTest("Need ≥ 2 companies for mismatch test")
-        co_a, co_b = companies[0].name, companies[1].name
-        ba_b = frappe.get_all("Bank Account", filters={"company": co_b}, limit=1)
-        if not ba_b:
-            self.skipTest("No bank account for second company")
+        # The pinned env guarantees a second company with its own bank account,
+        # so this no longer skips itself when the site happens to be sparse.
+        env = get_test_env()
+        co_a = env["company"]
+        ba_b = env["secondary_bank_account"]
+        self.assertNotEqual(
+            frappe.db.get_value("Bank Account", ba_b, "company"),
+            co_a,
+            "secondary bank account must belong to a different company",
+        )
 
         cb = frappe.new_doc("Cheque Book")
         cb.company      = co_a
-        cb.bank_account = ba_b[0].name
+        cb.bank_account = ba_b
         cb.sequence_type   = "Numeric"
         cb.start_cheque_no = "1"
         cb.end_cheque_no   = "5"
@@ -115,13 +123,10 @@ class TestChequeBook(FrappeTestCase):
             cb.insert()
 
     def test_end_before_start_raises(self):
-        company = frappe.get_all("Company", limit=1)[0].name
-        ba = frappe.get_all("Bank Account", filters={"company": company}, limit=1)
-        if not ba:
-            self.skipTest("No bank account")
+        env = get_test_env()
         cb = frappe.new_doc("Cheque Book")
-        cb.company      = company
-        cb.bank_account = ba[0].name
+        cb.company      = env["company"]
+        cb.bank_account = env["bank_account"]
         cb.sequence_type   = "Numeric"
         cb.start_cheque_no = "100"
         cb.end_cheque_no   = "50"
@@ -220,3 +225,120 @@ class TestChequeBook(FrappeTestCase):
                 get_book_counters(cb.name)
         finally:
             frappe.set_user(original_user)
+
+
+# ====================================================================== #
+#  v1.1.6 — §3.2.8: stored counters track every leaf state change        #
+# ====================================================================== #
+
+class TestChequeBookCounters(FrappeTestCase):
+    """The counters used to be recomputed only when the Cheque Book form was
+    opened (get_book_counters), so the list view — and every other reader of the
+    stored fields — showed values that were stale the moment a leaf moved.
+
+    Every assertion below reads the STORED column directly, never
+    get_book_counters, otherwise the recompute-on-read would mask the bug.
+    """
+
+    def _stored(self, book):
+        return frappe.db.get_value(
+            "Cheque Book",
+            book,
+            ["unused_leaves", "issued_leaves", "voided_leaves", "cancelled_leaves", "status"],
+            as_dict=True,
+        )
+
+    def test_counters_after_submit(self):
+        cb = make_cheque_book(9600, 9609)
+        cb.submit()
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 10)
+        self.assertEqual(stored.issued_leaves, 0)
+        self.assertEqual(stored.voided_leaves, 0)
+
+    def test_counters_after_reserve(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import reserve_leaf
+
+        cb = make_cheque_book(9700, 9709)
+        cb.submit()
+        reserve_leaf(cb.name, "DUMMY-9700", frappe.session.user)
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 9, "reserve did not refresh the stored counter")
+        self.assertEqual(stored.issued_leaves, 0)
+
+    def test_counters_after_issue(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
+            mark_leaf_issued,
+            reserve_leaf,
+        )
+
+        cb = make_cheque_book(9800, 9809)
+        cb.submit()
+        leaf = reserve_leaf(cb.name, "DUMMY-9800", frappe.session.user)
+        mark_leaf_issued(leaf["name"])
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 9)
+        self.assertEqual(stored.issued_leaves, 1, "issue did not refresh the stored counter")
+
+    def test_counters_after_void(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
+            release_leaf,
+            reserve_leaf,
+        )
+
+        cb = make_cheque_book(9900, 9909)
+        cb.submit()
+        leaf = reserve_leaf(cb.name, "DUMMY-9900", frappe.session.user)
+        release_leaf(leaf["name"], status="Voided", void_reason="test")
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 9)
+        self.assertEqual(stored.voided_leaves, 1, "void did not refresh the stored counter")
+
+    def test_counters_after_manual_leaf_edit(self):
+        """A leaf edited through the desk form goes through the ORM, so the
+        ChequeLeaf.on_update hook is what keeps the book honest."""
+        cb = make_cheque_book(10000, 10009)
+        cb.submit()
+        leaf_name = frappe.get_all(
+            "Cheque Leaf", filters={"cheque_book": cb.name}, limit=1, pluck="name"
+        )[0]
+
+        leaf = frappe.get_doc("Cheque Leaf", leaf_name)
+        leaf.leaf_status = "Voided"
+        leaf.void_reason = "manual correction"
+        leaf.flags.ignore_permissions = True
+        leaf.save()
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 9)
+        self.assertEqual(stored.voided_leaves, 1, "manual edit did not refresh the stored counter")
+
+    def test_counters_after_book_cancel(self):
+        cb = make_cheque_book(10100, 10104)
+        cb.submit()
+        cb.cancel()
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 0)
+        self.assertEqual(stored.cancelled_leaves, 5)
+        self.assertEqual(stored.status, "Cancelled")
+
+    def test_book_auto_exhausts_when_last_leaf_consumed(self):
+        from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
+            mark_leaf_issued,
+            reserve_leaf,
+        )
+
+        cb = make_cheque_book(10200, 10201)
+        cb.submit()
+        for i in range(2):
+            leaf = reserve_leaf(cb.name, f"DUMMY-1020{i}", frappe.session.user)
+            mark_leaf_issued(leaf["name"])
+
+        stored = self._stored(cb.name)
+        self.assertEqual(stored.unused_leaves, 0)
+        self.assertEqual(stored.issued_leaves, 2)
+        self.assertEqual(stored.status, "Exhausted")

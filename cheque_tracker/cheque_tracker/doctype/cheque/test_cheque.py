@@ -15,19 +15,13 @@ from cheque_tracker.cheque_tracker.doctype.cheque.test_cheque_financial import (
     _make_incoming_cheque,
     _env as _financial_env,
 )
+from cheque_tracker.tests.utils import get_test_env
 
 
 def _env():
-    companies = frappe.get_all("Company", limit=1)
-    if not companies:
-        return None, None, None, None
-    company = companies[0].name
-    ba = frappe.get_all("Bank Account", filters={"company": company}, limit=1)
-    bank_account = ba[0].name if ba else None
-    customers = frappe.get_all("Customer", limit=1)
-    customer = customers[0].name if customers else None
-    currency = frappe.db.get_value("Company", company, "default_currency") or "USD"
-    return company, bank_account, customer, currency
+    """Pinned test environment — see cheque_tracker/tests/utils.py."""
+    env = get_test_env()
+    return env["company"], env["bank_account"], env["customer"], env["currency"]
 
 
 def _outgoing(cb, company, customer, currency):
@@ -129,6 +123,9 @@ class TestCheque(FrappeTestCase):
         chq.due_date     = frappe.utils.add_days(frappe.utils.today(), 15)
         chq.cheque_no    = "EXT-99999"
         chq.drawer_name  = "John Doe"
+        # Incoming cheques require a drawee bank (cheque.py:before_save); the
+        # point of this test is that they do NOT require a Cheque Book.
+        chq.drawee_bank  = get_test_env()["drawee_bank"]
         chq.flags.ignore_permissions = True
         chq.insert()
         self.assertEqual(chq.cheque_no, "EXT-99999")
@@ -350,4 +347,218 @@ class TestCheque(FrappeTestCase):
                 user="Administrator",
             ),
             "System Manager (Administrator) write permission regressed.",
+        )
+
+
+# ====================================================================== #
+#  v1.1.6 — BUILD_INSTRUCTIONS §3.2 regressions                          #
+# ====================================================================== #
+
+class TestChequeEventLogging(FrappeTestCase):
+    """§3.2.6 — exactly one Cheque Event per real transition, whichever path fired."""
+
+    def _events(self, cheque_name, event_type=None):
+        filters = {"parent": cheque_name, "parenttype": "Cheque"}
+        if event_type:
+            filters["event_type"] = event_type
+        return frappe.get_all("Cheque Event", filters=filters, fields=["event_type", "notes"])
+
+    def _incoming(self):
+        env = get_test_env()
+        chq = frappe.new_doc("Cheque")
+        chq.cheque_type = "Incoming"
+        chq.company = env["company"]
+        chq.party_type = "Customer"
+        chq.party = env["customer"]
+        chq.amount = 1500
+        chq.currency = env["currency"]
+        chq.due_date = frappe.utils.add_days(frappe.utils.today(), 30)
+        chq.cheque_no = f"EVT-{frappe.generate_hash(length=6)}"
+        chq.drawee_bank = env["drawee_bank"]
+        chq.drawer_name = "Test Drawer"
+        chq.bank_account = env["bank_account"]
+        chq.flags.ignore_permissions = True
+        chq.insert()
+        chq = frappe.get_doc("Cheque", chq.name)
+        chq.flags.ignore_permissions = True
+        chq.submit()
+        chq.reload()
+        return chq
+
+    def _outgoing_submitted(self):
+        env = get_test_env()
+        cb = make_cheque_book(9100, 9110)
+        cb.submit()
+        chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
+        chq.submit()
+        chq.reload()
+        return chq
+
+    # ------------------------------------------------------------------ #
+
+    def test_outgoing_submit_logs_received_not_a_second_created(self):
+        """Outgoing submit used to append a SECOND 'Created' event, duplicating
+        after_insert's and leaving the Draft → Received transition unrecorded."""
+        chq = self._outgoing_submitted()
+
+        created = self._events(chq.name, "Created")
+        received = self._events(chq.name, "Received")
+
+        self.assertEqual(len(created), 1, f"expected one Created event, got {created}")
+        self.assertEqual(len(received), 1, f"expected one Received event, got {received}")
+
+    def test_incoming_submit_logs_exactly_one_received(self):
+        chq = self._incoming()
+        self.assertEqual(len(self._events(chq.name, "Created")), 1)
+        self.assertEqual(len(self._events(chq.name, "Received")), 1)
+
+    def test_workflow_transition_logs_exactly_one_event(self):
+        """apply_workflow → doc.save() → on_update_after_submit. Before v1.1.6
+        this path wrote no timeline row at all (production CHQ-2026-00001)."""
+        from frappe.model.workflow import apply_workflow
+
+        chq = self._incoming()
+        self.assertEqual(len(self._events(chq.name, "Deposited")), 0)
+
+        apply_workflow(chq, "Deposit")
+
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "status"), "Deposited")
+        deposited = self._events(chq.name, "Deposited")
+        self.assertEqual(len(deposited), 1, f"expected exactly one Deposited event, got {deposited}")
+
+    def test_ui_transition_logs_exactly_one_event(self):
+        """change_cheque_status writes with frappe.db.set_value, which bypasses
+        the ORM — it must still produce exactly one row, and not two now that
+        the workflow path also logs."""
+        chq = self._incoming()
+
+        change_cheque_status(chq.name, "In Safe")
+
+        in_safe = self._events(chq.name, "In Safe")
+        self.assertEqual(len(in_safe), 1, f"expected exactly one In Safe event, got {in_safe}")
+
+    def test_two_transitions_produce_two_events(self):
+        from frappe.model.workflow import apply_workflow
+
+        chq = self._incoming()
+        change_cheque_status(chq.name, "In Safe")
+        chq.reload()
+        apply_workflow(chq, "Deposit")
+
+        self.assertEqual(len(self._events(chq.name, "In Safe")), 1)
+        self.assertEqual(len(self._events(chq.name, "Deposited")), 1)
+
+    def test_submit_then_cancel_in_one_flow(self):
+        """_flush_events bumped `modified` without resyncing the in-memory doc,
+        so submit() followed by cancel() raised TimestampMismatchError."""
+        chq = self._outgoing_submitted()
+        chq.cancel()
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "docstatus"), 2)
+
+
+class TestChequeCustody(FrappeTestCase):
+    """§3.2.7 — current_holder semantics."""
+
+    def _incoming_draft(self, **overrides):
+        env = get_test_env()
+        chq = frappe.new_doc("Cheque")
+        chq.cheque_type = "Incoming"
+        chq.company = env["company"]
+        chq.party_type = "Customer"
+        chq.party = env["customer"]
+        chq.amount = 900
+        chq.currency = env["currency"]
+        chq.due_date = frappe.utils.add_days(frappe.utils.today(), 20)
+        chq.cheque_no = f"CUS-{frappe.generate_hash(length=6)}"
+        chq.drawee_bank = env["drawee_bank"]
+        chq.bank_account = env["bank_account"]
+        for field, value in overrides.items():
+            setattr(chq, field, value)
+        chq.flags.ignore_permissions = True
+        chq.insert()
+        return chq
+
+    def test_incoming_does_not_default_current_holder(self):
+        """§3.2.7c — whoever keys in an incoming cheque may never have held it."""
+        chq = self._incoming_draft()
+        self.assertFalse(
+            chq.current_holder,
+            f"Incoming cheque defaulted current_holder to {chq.current_holder!r}",
+        )
+
+    def test_incoming_keeps_explicitly_set_holder(self):
+        chq = self._incoming_draft(current_holder="Administrator")
+        self.assertEqual(chq.current_holder, "Administrator")
+
+    def test_outgoing_defaults_current_holder_to_creator(self):
+        """Outgoing cheques are drawn by us, so the creator does hold the leaf."""
+        env = get_test_env()
+        cb = make_cheque_book(9200, 9210)
+        cb.submit()
+        chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
+        self.assertEqual(chq.current_holder, frappe.session.user)
+
+    def test_hand_over_via_ui_clears_current_holder(self):
+        """§3.2.7a — a User link cannot represent an external payee."""
+        env = get_test_env()
+        cb = make_cheque_book(9300, 9310)
+        cb.submit()
+        chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
+        chq.submit()
+        chq.reload()
+        self.assertTrue(chq.current_holder)
+
+        change_cheque_status(chq.name, "Handed Over")
+
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "status"), "Handed Over")
+        self.assertIsNone(
+            frappe.db.get_value("Cheque", chq.name, "current_holder") or None,
+            "current_holder survived Hand Over",
+        )
+
+    def test_hand_over_via_workflow_clears_current_holder(self):
+        from frappe.model.workflow import apply_workflow
+
+        env = get_test_env()
+        cb = make_cheque_book(9400, 9410)
+        cb.submit()
+        chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
+        chq.submit()
+        chq.reload()
+        self.assertTrue(chq.current_holder)
+
+        apply_workflow(chq, "Hand Over")
+
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "status"), "Handed Over")
+        self.assertIsNone(
+            frappe.db.get_value("Cheque", chq.name, "current_holder") or None,
+            "current_holder survived the workflow Hand Over",
+        )
+
+    def test_external_holder_round_trip(self):
+        """§3.2.7b — the external party gets a field of its own."""
+        chq = self._incoming_draft()
+        chq.external_holder = "مندوب شركة الكهرباء"
+        chq.flags.ignore_permissions = True
+        chq.save()
+
+        self.assertEqual(
+            frappe.db.get_value("Cheque", chq.name, "external_holder"),
+            "مندوب شركة الكهرباء",
+        )
+
+    def test_external_holder_settable_after_submit(self):
+        env = get_test_env()
+        cb = make_cheque_book(9500, 9510)
+        cb.submit()
+        chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
+        chq.submit()
+        chq.reload()
+
+        chq.external_holder = "Courier — Aramex"
+        chq.flags.ignore_permissions = True
+        chq.save()
+
+        self.assertEqual(
+            frappe.db.get_value("Cheque", chq.name, "external_holder"), "Courier — Aramex"
         )

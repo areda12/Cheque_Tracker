@@ -35,6 +35,7 @@
   "cheque_leaf",
   "section_custody",
   "current_holder",
+  "external_holder",
   "custody_location",
   "section_accounting",
   "reference_doctype",
@@ -243,6 +244,13 @@
    "options": "User",
    "read_only": 1,
    "allow_on_submit": 1
+  },
+  {
+   "fieldname": "external_holder",
+   "fieldtype": "Data",
+   "label": "External Holder",
+   "allow_on_submit": 1,
+   "description": "Person or organisation outside the company currently holding the cheque (a Link to User cannot represent them)."
   },
   {
    "fieldname": "custody_location",

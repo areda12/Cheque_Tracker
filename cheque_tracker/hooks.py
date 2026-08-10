@@ -126,6 +126,15 @@ after_install = "cheque_tracker.install.after_install"
 after_migrate = "cheque_tracker.install.ensure_ui_fixtures"
 
 # ------------------------------------------------------------------
+# Tests
+# ------------------------------------------------------------------
+# Builds the deterministic test environment (canonical EEI company, bank
+# account, parties, roles, settings) before the suite runs. Without it the
+# helpers fell back to `frappe.get_all("Company", limit=1)` and most tests
+# skipped themselves. See cheque_tracker/tests/utils.py.
+before_tests = "cheque_tracker.tests.utils.before_tests"
+
+# ------------------------------------------------------------------
 # Jinja
 # ------------------------------------------------------------------
 jinja = {

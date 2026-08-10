@@ -13,6 +13,26 @@ from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
     reserve_leaf,
 )
 
+# Status → Cheque Event type. Shared by both transition paths (workflow saves
+# land in on_update_after_submit; the UI endpoint goes through
+# log_status_change) so an event row looks identical whichever fired.
+STATUS_EVENT_MAP = {
+    "Received":    "Received",
+    "In Safe":     "In Safe",
+    "Deposited":   "Deposited",
+    "Handed Over": "Handed Over",
+    "Cleared":     "Cleared",
+    "Bounced":     "Bounced",
+    "Returned":    "Returned",
+    "Cancelled":   "Cancelled",
+    "Replaced":    "Replaced",
+}
+
+# Statuses at which the cheque has physically left the company. current_holder
+# is a Link to User and cannot name an external payee, so it is cleared rather
+# than left pointing at the employee who last held it (§3.2.7a).
+EXTERNAL_CUSTODY_STATUSES = {"Handed Over"}
+
 
 class Cheque(Document):
     # ------------------------------------------------------------------ #
@@ -23,7 +43,12 @@ class Cheque(Document):
         # Initialise current_holder during insert so it lands in the same
         # row write as the rest of the doc — no post-insert UPDATE that
         # would bump `modified` and desync the in-memory doc.
-        if not self.current_holder:
+        #
+        # Outgoing cheques are drawn by us, so whoever creates the record does
+        # hold the physical leaf. An Incoming cheque arrives from outside and
+        # may be keyed in by someone who never touched it — defaulting the
+        # holder there invents a custody record that did not happen (§3.2.7c).
+        if not self.current_holder and self.cheque_type == "Outgoing":
             self.current_holder = frappe.session.user
 
     def after_insert(self):
@@ -54,8 +79,15 @@ class Cheque(Document):
     def on_submit(self):
         if self.cheque_type == "Outgoing":
             self._mark_leaf_issued_on_submit()
-        event_type = "Received" if self.cheque_type == "Incoming" else "Created"
-        self._append_event(event_type, notes="Cheque submitted.")
+
+        # before_submit moves BOTH directions to "Received", so both log that
+        # transition. Outgoing used to log a second "Created" here, duplicating
+        # the one after_insert already wrote and leaving the real Draft →
+        # Received transition unrecorded (§3.2.6).
+        self._append_event(
+            STATUS_EVENT_MAP[self.status],
+            notes="Cheque submitted.",
+        )
         self._flush_events()
 
     def on_update(self):
@@ -161,12 +193,37 @@ class Cheque(Document):
                 notes=f"Clearance Type changed from {old_ct or 'unset'} to {new_ct} — by {frappe.session.user}.",
             )
 
+        # ---------------------------------------------------------------- #
+        #  Status transitions (§3.2.6)                                      #
+        # ---------------------------------------------------------------- #
+        # apply_workflow never uses db_set: it sets the state field in memory
+        # (frappe/model/workflow.py:141) and calls doc.save(), which for an
+        # already-submitted doc is classified as "update_after_submit" and
+        # dispatches ONLY this hook (frappe/model/document.py:1437-1466).
+        # Workflow-driven transitions therefore never reached log_status_change
+        # and left no timeline row at all.
+        #
+        # The other path, change_cheque_status → log_status_change, writes with
+        # frappe.db.set_value, which bypasses the ORM entirely and so never
+        # reaches this hook. The two paths are disjoint: exactly one event row
+        # is written per real transition, whichever fired.
+        status_changed = self.has_value_changed("status")
+        if status_changed:
+            self._append_event(
+                STATUS_EVENT_MAP.get(self.status, "Note"),
+                notes=(
+                    f"Status changed from {before.status} to {self.status} "
+                    f"via workflow — by {frappe.session.user}."
+                ),
+            )
+            self._apply_custody_side_effects(self.status)
+
         self._flush_events()
 
         # Workflow-driven GL side effects.
         # has_value_changed reads from _doc_before_save — set reliably by
         # the framework before this hook runs, even on workflow saves.
-        if not self.has_value_changed("status"):
+        if not status_changed:
             return
 
         old, new = before.status, self.status
@@ -257,20 +314,56 @@ class Cheque(Document):
         updates = {"status": new_status}
         if new_status == "Cleared":
             updates["cleared_date"] = today()
+
+        # Clear the internal custodian in the SAME write as the status, so the
+        # two can never disagree (§3.2.7a). The workflow path does the
+        # equivalent through _apply_custody_side_effects.
+        released_holder = None
+        if new_status in EXTERNAL_CUSTODY_STATUSES and self.current_holder:
+            released_holder = self.current_holder
+            updates["current_holder"] = None
+
         frappe.db.set_value("Cheque", self.name, updates)
         self.status = new_status
+        if released_holder:
+            self.current_holder = None
 
-        EVENT_MAP = {
-            "Received": "Received", "In Safe": "In Safe", "Deposited": "Deposited",
-            "Handed Over": "Handed Over",
-            "Cleared": "Cleared", "Bounced": "Bounced",
-            "Returned": "Returned", "Cancelled": "Cancelled", "Replaced": "Replaced",
-        }
         self._append_event(
-            EVENT_MAP.get(new_status, "Note"),
+            STATUS_EVENT_MAP.get(new_status, "Note"),
             notes=notes or f"Status changed from {old_status} to {new_status}.",
         )
+        if released_holder:
+            self._append_event(
+                "Note",
+                from_holder=released_holder,
+                notes=(
+                    f"Custody left the company on {new_status}; internal holder "
+                    f"{released_holder} cleared."
+                ),
+            )
         self._flush_events()
+
+    def _apply_custody_side_effects(self, new_status: str):
+        """Drop the internal custodian once the cheque has left the company.
+
+        current_holder is a Link to User; an external payee (a courier, the
+        electricity company's collector) cannot be represented by it, and
+        leaving the last employee there reads as if they still hold the cheque.
+        Record the external party in `external_holder` instead (§3.2.7a/b).
+        """
+        if new_status not in EXTERNAL_CUSTODY_STATUSES or not self.current_holder:
+            return
+
+        released_holder = self.current_holder
+        self.db_set("current_holder", None, update_modified=False)
+        self._append_event(
+            "Note",
+            from_holder=released_holder,
+            notes=(
+                f"Custody left the company on {new_status}; internal holder "
+                f"{released_holder} cleared."
+            ),
+        )
 
     def hand_over(self, to_user: str, location: str = "", notes: str = ""):
         old_holder = self.current_holder
@@ -426,6 +519,7 @@ class Cheque(Document):
                     "notes":             ev.notes,
                 })
                 child.db_insert()
+            self._resync_after_flush(frappe.get_doc("Cheque", self.name))
             return
 
         for ev in new_events:
@@ -433,6 +527,28 @@ class Cheque(Document):
         persisted.flags.ignore_permissions = True
         persisted.flags.ignore_validate_update_after_submit = True
         persisted.save()
+
+        self._resync_after_flush(persisted)
+
+    def _resync_after_flush(self, persisted):
+        """Realign this in-memory doc with the row _flush_events just wrote.
+
+        Two staleness bugs are closed here:
+
+        1. `persisted.save()` bumps `modified`. check_if_latest compares the DB
+           value against `self._original_modified`
+           (frappe/model/document.py:1101), so any later save()/cancel() on this
+           same object raised TimestampMismatchError — which is precisely what a
+           submit()-then-cancel() flow does, and what the Cheque Batch cascade
+           will do.
+        2. The freshly appended rows only ever got names on `persisted`; the
+           local copies stayed nameless, so a second _flush_events() on the same
+           object would have written them a second time. Adopting the persisted
+           child rows makes the method idempotent.
+        """
+        self.events = persisted.get("events")
+        self.modified = persisted.modified
+        self._original_modified = persisted.modified
 
 
 # ------------------------------------------------------------------ #
