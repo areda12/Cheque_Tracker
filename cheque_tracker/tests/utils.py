@@ -159,6 +159,164 @@ def get_test_env():
 def before_tests():
 	"""hooks.py -> before_tests. Runs once per `bench run-tests --app cheque_tracker`."""
 	env = ensure_test_env()
+	# §4.8 requires the Payment Entry integration to be exercised WITH an approval
+	# gate in play — that is the only way the degraded ToDo path is reachable.
+	# Built here rather than inside a test because activating a workflow makes
+	# Frappe add a Custom Field, and that DDL implicitly commits, which would tear
+	# a test's transaction in half.
+	ensure_payment_entry_workflow()
+	ensure_pe_users()
 	frappe.db.commit()
 	print(f"[cheque_tracker] test env ready: company={env['company']} bank_account={env['bank_account']}")
 	return env
+
+
+
+PE_WORKFLOW = "Payment Entry Approval"
+PE_APPROVER_ROLE = "Accounts Manager"
+PE_APPROVER_USER = "pe.approver@eei.localhost"
+PE_CLERK_USER = "pe.clerk@eei.localhost"
+
+
+def _ensure_workflow_vocabulary():
+	"""Workflow States / Action Masters the PE gate needs."""
+	for state, style in (
+		("Draft", ""),
+		("Approval Pending by Accounting Manager", "Warning"),
+		("Approved", "Success"),
+		("Rejected", "Danger"),
+	):
+		if not frappe.db.exists("Workflow State", state):
+			doc = frappe.get_doc(
+				{"doctype": "Workflow State", "workflow_state_name": state, "style": style}
+			)
+			doc.flags.ignore_permissions = True
+			doc.insert(ignore_permissions=True)
+
+	for action in ("Request Approval", "Approve", "Reject"):
+		if not frappe.db.exists("Workflow Action Master", action):
+			doc = frappe.get_doc(
+				{"doctype": "Workflow Action Master", "workflow_action_name": action}
+			)
+			doc.flags.ignore_permissions = True
+			doc.insert(ignore_permissions=True)
+
+
+def ensure_payment_entry_workflow():
+	"""An active approval gate on Payment Entry, mirroring production.
+
+	§4.8 requires the PE integration to be tested *with* a workflow in play,
+	because that is what makes `Clear` unable to submit the PE for a user who
+	lacks the approver role — the degraded ToDo path.
+
+	Created once from `before_tests`, never inside a test: activating a workflow
+	makes Frappe add a `workflow_state` Custom Field to Payment Entry, and that
+	DDL implicitly commits, which would tear a test's transaction in half.
+	"""
+	if frappe.db.exists("Workflow", PE_WORKFLOW):
+		return PE_WORKFLOW
+
+	_ensure_workflow_vocabulary()
+
+	workflow = frappe.get_doc(
+		{
+			"doctype": "Workflow",
+			"workflow_name": PE_WORKFLOW,
+			"document_type": "Payment Entry",
+			"is_active": 1,
+			"override_status": 0,
+			"send_email_alert": 0,
+			"workflow_state_field": "workflow_state",
+			"states": [
+				{"state": "Draft", "doc_status": "0", "allow_edit": "Accounts User"},
+				{
+					"state": "Approval Pending by Accounting Manager",
+					"doc_status": "0",
+					"allow_edit": PE_APPROVER_ROLE,
+				},
+				{"state": "Approved", "doc_status": "1", "allow_edit": PE_APPROVER_ROLE},
+				{"state": "Rejected", "doc_status": "0", "allow_edit": PE_APPROVER_ROLE},
+			],
+			"transitions": [
+				{
+					"state": "Draft",
+					"action": "Request Approval",
+					"next_state": "Approval Pending by Accounting Manager",
+					"allowed": "Accounts User",
+					"allow_self_approval": 1,
+				},
+				{
+					"state": "Draft",
+					"action": "Approve",
+					"next_state": "Approved",
+					"allowed": PE_APPROVER_ROLE,
+					"allow_self_approval": 1,
+				},
+				{
+					"state": "Approval Pending by Accounting Manager",
+					"action": "Approve",
+					"next_state": "Approved",
+					"allowed": PE_APPROVER_ROLE,
+					"allow_self_approval": 1,
+				},
+				{
+					"state": "Approval Pending by Accounting Manager",
+					"action": "Reject",
+					"next_state": "Rejected",
+					"allowed": PE_APPROVER_ROLE,
+					"allow_self_approval": 1,
+				},
+			],
+		}
+	)
+	workflow.flags.ignore_permissions = True
+	workflow.insert(ignore_permissions=True)
+
+	# Frappe creates the `workflow_state` custom field with no default
+	# (frappe/workflow/doctype/workflow/workflow.py:43-62), so a Payment Entry
+	# created by API rather than through the desk starts with no state at all and
+	# has no transitions. Give it the initial state so the gate behaves the way it
+	# does in production.
+	custom_field = frappe.db.get_value(
+		"Custom Field", {"dt": "Payment Entry", "fieldname": "workflow_state"}, "name"
+	)
+	if custom_field:
+		frappe.db.set_value("Custom Field", custom_field, "default", "Draft")
+		frappe.clear_cache(doctype="Payment Entry")
+
+	frappe.db.commit()
+	return PE_WORKFLOW
+
+
+def ensure_pe_users():
+	"""One user who may approve a Payment Entry and one who may not."""
+	for email, first_name, roles in (
+		(PE_APPROVER_USER, "PE Approver", [PE_APPROVER_ROLE, "Accounts User", "Treasury User"]),
+		(PE_CLERK_USER, "PE Clerk", ["Accounts User", "Treasury User"]),
+	):
+		if not frappe.db.exists("User", email):
+			user = frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": email,
+					"first_name": first_name,
+					"send_welcome_email": 0,
+					"enabled": 1,
+				}
+			)
+			user.flags.ignore_permissions = True
+			user.insert(ignore_permissions=True)
+
+		user = frappe.get_doc("User", email)
+		have = {r.role for r in user.roles}
+		want = [r for r in roles if r not in have and frappe.db.exists("Role", r)]
+		# Never rewrite the child table wholesale — see BUILD_INSTRUCTIONS A.5.
+		for role in want:
+			user.append("roles", {"role": role})
+		# The clerk must NOT be able to approve, or the degraded path is untestable.
+		if email == PE_CLERK_USER:
+			user.roles = [r for r in user.roles if r.role != PE_APPROVER_ROLE]
+		if want or email == PE_CLERK_USER:
+			user.save(ignore_permissions=True)
+
+	return PE_APPROVER_USER, PE_CLERK_USER

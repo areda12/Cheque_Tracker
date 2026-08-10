@@ -282,8 +282,12 @@ function _setup_buttons(frm) {
         }, __("View"));
     }
 
-    const incoming_pre_clear = frm.doc.cheque_type === "Incoming" && frm.doc.status === "Deposited";
-    const outgoing_pre_clear = frm.doc.cheque_type === "Outgoing" && frm.doc.status === "Handed Over";
+    // v1.2 — Clear is reachable from more states now: Deposited or Endorsed
+    // (incoming), Handed Over or Presented (outgoing).
+    const incoming_pre_clear =
+        frm.doc.cheque_type === "Incoming" && ["Deposited", "Endorsed"].includes(frm.doc.status);
+    const outgoing_pre_clear =
+        frm.doc.cheque_type === "Outgoing" && ["Handed Over", "Presented"].includes(frm.doc.status);
     if (incoming_pre_clear || outgoing_pre_clear) {
         _wrap_clear_action(frm);
     }
@@ -291,6 +295,196 @@ function _setup_buttons(frm) {
     if (frm.doc.status === "Bounced" && !frm.doc.replacement_cheque) {
         _wrap_replace_action(frm);
     }
+
+    _wrap_v12_actions(frm);
+}
+
+
+// ------------------------------------------------------------------ //
+//  v1.2 workflow actions that need fields filled first                //
+// ------------------------------------------------------------------ //
+//
+// apply_workflow reloads the document from the database before running the
+// transition (frappe/model/workflow.py:123), so anything the user typed on the
+// form but did not save is discarded. Every field a transition depends on has to
+// be persisted BEFORE the action fires — which is what this wrapper does, and
+// why the Endorse / Bounce / Cash Clear buttons cannot simply rely on the user
+// filling the section in first.
+function _wrap_action_with_fields(frm, action, opts) {
+    const $btn = frm.page.menu.find(`[data-label="${encodeURIComponent(action)}"]`);
+    if (!$btn.length || $btn.data("ct-wrapped")) return;
+    $btn.data("ct-wrapped", true);
+
+    $btn.off("click").on("click", () => {
+        if (opts.is_ready && opts.is_ready(frm)) {
+            frappe
+                .xcall("frappe.model.workflow.apply_workflow", { doc: frm.doc, action })
+                .then(() => frm.reload_doc());
+            return;
+        }
+
+        const d = new frappe.ui.Dialog({
+            title: opts.title,
+            fields: opts.fields(frm),
+            primary_action_label: opts.primary_label || __("Confirm"),
+            primary_action(values) {
+                Object.assign(frm.doc, values);
+                frm.save()
+                    .then(() =>
+                        frappe.xcall("frappe.model.workflow.apply_workflow", {
+                            doc: frm.doc,
+                            action,
+                        })
+                    )
+                    .then(() => {
+                        d.hide();
+                        frm.reload_doc();
+                    });
+            },
+        });
+        d.show();
+    });
+}
+
+
+function _wrap_v12_actions(frm) {
+    // Endorsement (تظهير) — §4.3
+    _wrap_action_with_fields(frm, "Endorse", {
+        title: __("Endorse Cheque"),
+        primary_label: __("Confirm Endorsement"),
+        is_ready: (f) =>
+            f.doc.endorsement_date &&
+            f.doc.endorsed_to_party_type &&
+            (f.doc.endorsed_to_party_type === "Other"
+                ? f.doc.endorsed_to_other_name
+                : f.doc.endorsed_to_party),
+        fields: (f) => [
+            {
+                fieldname: "endorsed_to_party_type",
+                fieldtype: "Select",
+                label: __("Endorsed To Party Type"),
+                options: ["", "Supplier", "Employee", "Other"],
+                default: f.doc.endorsed_to_party_type || "Supplier",
+                reqd: 1,
+            },
+            {
+                fieldname: "endorsed_to_party",
+                fieldtype: "Dynamic Link",
+                label: __("Endorsed To"),
+                options: "endorsed_to_party_type",
+                default: f.doc.endorsed_to_party,
+                depends_on: "eval:doc.endorsed_to_party_type && doc.endorsed_to_party_type!='Other'",
+                mandatory_depends_on:
+                    "eval:doc.endorsed_to_party_type && doc.endorsed_to_party_type!='Other'",
+            },
+            {
+                fieldname: "endorsed_to_other_name",
+                fieldtype: "Data",
+                label: __("Endorsed To (Name)"),
+                default: f.doc.endorsed_to_other_name,
+                depends_on: "eval:doc.endorsed_to_party_type=='Other'",
+                mandatory_depends_on: "eval:doc.endorsed_to_party_type=='Other'",
+            },
+            {
+                fieldname: "endorsement_date",
+                fieldtype: "Date",
+                label: __("Endorsement Date"),
+                default: f.doc.endorsement_date || frappe.datetime.get_today(),
+                reqd: 1,
+            },
+        ],
+    });
+
+    // Bounce reason is mandatory server-side — §4.4
+    _wrap_action_with_fields(frm, "Bounce", {
+        title: __("Bounce Cheque"),
+        primary_label: __("Record Bounce"),
+        is_ready: (f) => !!f.doc.bounce_reason,
+        fields: (f) => [
+            {
+                fieldname: "bounce_reason",
+                fieldtype: "Select",
+                label: __("Bounce Reason"),
+                options: [
+                    "",
+                    "Insufficient Funds",
+                    "Signature Mismatch",
+                    "Account Closed",
+                    "Technical",
+                    "Other",
+                ],
+                default: f.doc.bounce_reason,
+                reqd: 1,
+            },
+        ],
+    });
+
+    // Cash clearance — §4.2
+    _wrap_action_with_fields(frm, "Cash Clear", {
+        title: __("Clear Cheque in Cash"),
+        primary_label: __("Confirm Clearing"),
+        is_ready: (f) => f.doc.cash_account && f.doc.cleared_date,
+        fields: (f) => [
+            {
+                fieldname: "cash_account",
+                fieldtype: "Link",
+                options: "Account",
+                label: __("Cash Account"),
+                default: f.doc.cash_account,
+                reqd: 1,
+                get_query: () => ({
+                    filters: { company: f.doc.company, account_type: "Cash", is_group: 0 },
+                }),
+            },
+            {
+                fieldname: "cleared_date",
+                fieldtype: "Date",
+                label: __("Cleared Date"),
+                default: f.doc.cleared_date || frappe.datetime.get_today(),
+                reqd: 1,
+            },
+            ..._clearance_override_fields(f),
+        ],
+    });
+}
+
+
+// A cheque with no Payment Entry or Journal Entry behind it posts nothing when
+// it clears, so the server refuses the transition. Only a System Manager can
+// waive that, and only with a reason — which is recorded on the timeline. The
+// fields appear only when they are actually needed, so the normal path is
+// unchanged.
+function _clearance_override_fields(frm) {
+    const has_accounting_doc =
+        (["Payment Entry", "Journal Entry"].includes(frm.doc.reference_doctype) &&
+            frm.doc.reference_name) ||
+        frm.doc.clearance_je;
+
+    if (has_accounting_doc) return [];
+    if (!frappe.user.has_role("System Manager")) return [];
+
+    return [
+        { fieldtype: "Section Break" },
+        {
+            fieldtype: "HTML",
+            options: `<div class="alert alert-warning" style="margin-bottom:10px">${__(
+                "This cheque has no linked Payment Entry or Journal Entry. Clearing it will post nothing to the ledger."
+            )}</div>`,
+        },
+        {
+            fieldname: "clearance_override",
+            fieldtype: "Check",
+            label: __("Clear Without Accounting Document"),
+            default: 0,
+        },
+        {
+            fieldname: "clearance_override_reason",
+            fieldtype: "Small Text",
+            label: __("Override Reason"),
+            depends_on: "eval:doc.clearance_override",
+            mandatory_depends_on: "eval:doc.clearance_override",
+        },
+    ];
 }
 
 
@@ -332,6 +526,7 @@ function _wrap_clear_action(frm) {
                     default: frm.doc.bank_account,
                     reqd: 1,
                 },
+                ..._clearance_override_fields(frm),
             ],
             primary_action_label: __("Confirm Clearing"),
             primary_action(values) {

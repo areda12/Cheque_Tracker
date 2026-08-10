@@ -24,7 +24,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Event Type",
-   "options": "Created\nReceived\nHanded Over\nIn Safe\nDeposited\nPresented\nCleared\nBounced\nReturned\nCancelled\nReplaced\nNote",
+   "options": "Created\nReceived\nIssued\nHanded Over\nIn Safe\nDeposited\nEndorsed\nPresented\nCleared\nBounced\nReturned\nCancelled\nReplaced\nNote",
    "reqd": 1
   },
   {

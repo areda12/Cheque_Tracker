@@ -25,9 +25,12 @@ import frappe
 # ---------------------------------------------------------------------------
 
 INCOMING_ACTIVE_STATUSES = ["Received", "In Safe", "Deposited"]
-# §3.1.1 — "Deposited" is incoming-only and "Handed Over" was missing, so every
-# outgoing cheque vanished from these four cards.
-OUTGOING_ACTIVE_STATUSES = ["Received", "In Safe", "Handed Over"]
+# §3.1.1 fixed "Handed Over" being missing here; §4.1 then split the vocabulary,
+# so an active outgoing cheque is Issued / In Safe / Handed Over / Presented and
+# never borrows an incoming status. "Endorsed" is deliberately absent from the
+# incoming list: once endorsed the cheque is no longer our receivable (§4.3), and
+# it gets its own card.
+OUTGOING_ACTIVE_STATUSES = ["Issued", "In Safe", "Handed Over", "Presented"]
 
 # §3.1.2 — a literal "Today" is not a Frappe keyword; it reaches MariaDB as the
 # string 'Today' and matches nothing. Date-relative filters belong in
@@ -45,6 +48,7 @@ NUMBER_CARDS = {
 	"Pending Payable":        {"cheque_type": "Outgoing", "statuses": OUTGOING_ACTIVE_STATUSES},
 	"Bounced Incoming":       {"cheque_type": "Incoming", "status_equals": "Bounced"},
 	"Bounced Outgoing":       {"cheque_type": "Outgoing", "status_equals": "Bounced"},
+	"Endorsed":               {"cheque_type": "Incoming", "status_equals": "Endorsed"},
 }
 
 OVERDUE_CARDS = ("Overdue Incoming", "Overdue Outgoing")

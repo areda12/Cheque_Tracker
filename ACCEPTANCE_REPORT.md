@@ -161,3 +161,154 @@ cheques including the incoming one, and CHQ-2026-00002 carried two `Created` eve
 - Rollback: the patch is forward-only, but it writes no user data — reverting the app to
   1.1.5 and re-running migrate restores the previous (broken) fixture values from the
   1.1.5 JSON.
+
+---
+
+## Phase 2 — v1.2.0 (state model + accounting)
+
+**Branch:** `v1.2.0-state-accounting` (PR 2, stacked on PR 1)
+**Date:** 2026-08-10
+**Result:** all §4.8 acceptance criteria pass.
+
+### Environment
+
+Same site as Phase 1 (`cheque.localhost`, `mute_emails = 1`), plus an **active
+Payment Entry approval workflow** created by `before_tests` and mirroring
+production's "Approval Pending by Accounting Manager" gate, with two users: one
+holding `Accounts Manager` and one deliberately without it. §4.8 requires the PE
+integration to be exercised with a gate in play — it is the only way the degraded
+ToDo path is reachable at all.
+
+### §4.8 acceptance criteria
+
+**Scenario matrix** — `bench --site cheque.localhost execute cheque_tracker.tests.e2e.run_all`
+
+```
+incoming: deposit → clear                        PASS
+incoming: cash clear                             PASS
+incoming: cash cheque cannot deposit             PASS
+incoming: endorse                                PASS
+incoming: endorse requires counterparty          PASS
+incoming: deposit → bounce → re-deposit → clear  PASS
+incoming: bounce requires a reason               PASS
+incoming: bounce → replace                       PASS
+outgoing: issue → hand over → present → clear    PASS
+outgoing: bounce                                 PASS
+outgoing: cannot use incoming statuses           PASS
+===========================================================
+11/11 passed
+```
+
+Every scenario moves the cheque with `apply_workflow` — the same call the desk
+makes — never by writing `status` directly. The matrix runs both standalone
+(against committed data) and inside the suite (rolled back), so it is proven in
+both modes.
+
+**Payment Entry integration** (`TestPaymentEntryIntegration`, 10 tests)
+
+| Criterion | Result | Test |
+|---|---|---|
+| Auto-create fires exactly once | **PASS** | `test_auto_create_fires_once` |
+| **Clear is refused with no accounting document** | **PASS** | `test_clear_is_blocked_without_an_accounting_document` |
+| **Cash Clear refused likewise** | **PASS** | `test_cash_clear_is_blocked_without_an_accounting_document` |
+| **The UI endpoint is gated too, not just the form** | **PASS** | `test_ui_path_is_blocked_too` |
+| **System Manager override works and is logged with who** | **PASS** | `test_system_manager_can_override_and_it_is_logged` |
+| **Override needs a reason** | **PASS** | `test_override_requires_a_reason` |
+| **Override refused to a non-System-Manager** | **PASS** | `test_override_is_refused_to_a_non_system_manager` |
+| **A Journal Entry also satisfies the gate** | **PASS** | `test_a_journal_entry_also_satisfies_the_gate` |
+| **Normal PE-linked path unaffected** | **PASS** | `test_normal_pe_linked_path_still_clears` |
+| Direction + fields mapped from the PE | **PASS** | `test_auto_create_maps_direction_and_fields` |
+| Outgoing PE does not auto-create (needs a book leaf) | **PASS** | `test_outgoing_payment_maps_to_outgoing_cheque` |
+| Draft-PE edits sync onto the draft cheque | **PASS** | `test_draft_pe_edits_sync_onto_the_draft_cheque` |
+| Amount mismatch throws | **PASS** | `test_amount_mismatch_throws_on_cheque_save` |
+| Clear submits the draft PE when permitted | **PASS** | `test_clear_submits_the_draft_pe_when_permitted` |
+| Clear degrades to a ToDo when not permitted | **PASS** | `test_clear_degrades_to_todo_when_user_cannot_approve` |
+| Already-submitted PE only gets `clearance_date` | **PASS** | `test_submitted_pe_only_gets_clearance_date` |
+| Clearing with no PE posts nothing, and says so | **PASS** | `test_clear_with_no_payment_entry_posts_nothing` |
+| **No clearance Journal Entry is created** | **PASS** | `test_no_clearance_journal_entry_is_created` |
+
+The last one is the double-posting guard: it counts Journal Entries before and
+after a Clear and asserts the count is unchanged. See `DECISIONS.md` D2.
+
+**Migration** (`TestStatusVocabularyMigration`, 3 tests) — outgoing `Received` →
+`Issued` including timeline rows; incoming untouched; idempotent.
+
+**Reminders** (§4.6, 13 tests) — due window, overdue/upcoming split, all four
+closed statuses excluded, Bounced still reminded (money still owed), same-day
+idempotency proven both in-transaction and cross-process, recipient parsing,
+Notification Log row, and the `developer_mode` Slack guard.
+
+**Translations** (§4.7, 10 tests) — **201 app-unique entries**. The app
+translates only strings frappe/erpnext do not: the namespace is flat, so an
+app-level entry rewrites that string for every app on the site. 39 shadowing
+entries were removed. `tests/verify_translations.py` enforces the rule against
+the 16,069 msgids in the two core catalogues, in the suite and as
+`bench execute cheque_tracker.tests.verify_translations.run`. The completeness
+checks now assert coverage across both catalogues, so a new untranslated status
+still turns the suite red.
+
+**migrate ×2**
+
+```
+migrate1 exit=0  →  verify_fixtures OK   verify_translations OK
+suite1  exit=0   Ran 118 tests   OK
+migrate2 exit=0  →  verify_fixtures OK   verify_translations OK
+suite2  exit=0   Ran 118 tests   OK
+scenario matrix: 11/11 passed
+```
+
+### Test suite
+
+| Release | Tests | Failures | Errors | Skipped |
+|---|---|---|---|---|
+| Baseline (`origin/main`) | 34 | 0 | 16 | 12 |
+| v1.1.6 | 63 | 0 | 0 | 0 |
+| **v1.2.0** | **118** | **0** | **0** | **0** |
+
+### Sensitivity check
+
+Run on the reminder digest (the newest, least-exercised code), one seeded bug at
+a time, each reverted:
+
+| Seeded bug | Observed |
+|---|---|
+| Idempotency guard disabled | **red** — `test_digest_is_sent_once_per_day` |
+| Closed-status filter narrowed to `Cancelled` only | **red** — `test_closed_statuses_are_excluded` |
+| Due-date bound changed to exclude overdue | **red** — 5 tests |
+| Clearance gate disabled | **red** — 3 tests |
+| A core-shadowing translation re-added | **red** — 1 test |
+
+### Deviations and known limitations
+
+1. **The tracker no longer posts to the general ledger.** The single most
+   important thing to review in this release. `DECISIONS.md` D2 has the full
+   reasoning; the short version is that keeping the v1.1.x clearance JE alongside
+   §4.5's submitted Payment Entry would double-post every collection.
+2. **A cheque with no accounting document can no longer be cleared** — refused on
+   both transition paths, with a logged System Manager override. Production
+   CHQ-2026-00001 (outgoing, no PE link) is exactly the case this catches: it
+   will refuse to clear until someone links the Payment Entry or overrides
+   deliberately. Worth knowing before the first eei-test soak.
+3. **The duplicate guard needs `drawee_bank`** to fire — D3.
+4. **Some poor core Arabic is now visible again** — the app no longer shadows
+   frappe/erpnext at all (D10), so core's `Draft` → "مشروع" ("project"),
+   `Due Date` → "بسبب تاريخ" and `Amount` → "كمية" ("quantity") render as core has
+   them. Fixing those belongs upstream or in a site-level Translation record, not
+   in an app override.
+5. **`auto_update_cheque_statuses` still only logs overdue *Deposited* cheques**,
+   so outgoing overdue cheques are not logged by it. Pre-existing, and superseded
+   in practice by the §4.6 digest, which covers both directions. Left alone to
+   keep this release's diff to its scope.
+6. The workspace still gets deleted and recreated on every migrate (Phase 1
+   limitation 2). §5.4 fixes the cause.
+
+### Migration notes (v1.2.0)
+
+- Patches that run: **`v3_3.split_status_vocabulary`** (one new patch).
+- Expected duration: seconds. It rewrites `status` on outgoing cheques sitting in
+  `Received`, rewrites their `Cheque Event` rows, and re-applies the dashboard
+  fixtures. Proportional to the number of outgoing cheques — two on production.
+- Manual steps required post-deploy: **none**. Optionally set `reminder_days` and
+  `notify_emails` in Cheque Tracker Settings to turn the daily digest on; with
+  `notify_emails` blank the digest simply does not send.
+- **Review before deploying:** the GL change in D2. Everything else is additive.

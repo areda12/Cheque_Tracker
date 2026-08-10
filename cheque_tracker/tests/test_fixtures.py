@@ -48,8 +48,8 @@ class TestShippedFixtures(FrappeTestCase):
 		failures = verify_fixtures.assert_dashboard_charts()
 		self.assertEqual(failures, {}, f"live Dashboard Charts violate §3.1: {failures}")
 
-	def test_all_ten_cards_and_two_charts_exist(self):
-		self.assertEqual(len(verify_fixtures.NUMBER_CARDS), 10)
+	def test_all_cards_and_two_charts_exist(self):
+		self.assertEqual(len(verify_fixtures.NUMBER_CARDS), 11)
 		self.assertEqual(len(verify_fixtures.DASHBOARD_CHARTS), 2)
 		for name in verify_fixtures.NUMBER_CARDS:
 			self.assertTrue(frappe.db.exists("Number Card", name), f"{name} missing")
@@ -68,13 +68,23 @@ class TestShippedFixtures(FrappeTestCase):
 				f"{name} dynamic_filters_json",
 			)
 
-	def test_outgoing_cards_count_handed_over(self):
-		"""§3.1.1 — the whole reason outgoing cheques disappeared from the cards."""
+	def test_outgoing_cards_use_the_outgoing_vocabulary(self):
+		"""§3.1.1 + §4.1 — outgoing cheques disappeared from these cards, and the
+		root cause was that they were filtered with incoming statuses."""
 		for name in ("Active Outgoing", "Pending Payable", "Due This Week Outgoing", "Overdue Outgoing"):
 			filters = json.loads(frappe.db.get_value("Number Card", name, "filters_json"))
 			status_clause = next(row for row in filters if row[1] == "status")
-			self.assertIn("Handed Over", status_clause[3], f"{name} still omits Handed Over")
+			self.assertIn("Handed Over", status_clause[3], f"{name} omits Handed Over")
+			self.assertIn("Issued", status_clause[3], f"{name} omits Issued")
 			self.assertNotIn("Deposited", status_clause[3], f"{name} keeps incoming-only Deposited")
+			self.assertNotIn("Received", status_clause[3], f"{name} keeps incoming-only Received")
+
+	def test_endorsed_is_not_counted_as_pending_receivable(self):
+		"""§4.3 — once endorsed the cheque is no longer our receivable."""
+		filters = json.loads(frappe.db.get_value("Number Card", "Pending Receivable", "filters_json"))
+		status_clause = next(row for row in filters if row[1] == "status")
+		self.assertNotIn("Endorsed", status_clause[3])
+		self.assertTrue(frappe.db.exists("Number Card", "Endorsed"), "Endorsed card missing")
 
 
 class TestRepairPatch(FrappeTestCase):

@@ -385,9 +385,9 @@ class TestChequeEventLogging(FrappeTestCase):
         chq.reload()
         return chq
 
-    def _outgoing_submitted(self):
+    def _outgoing_submitted(self, start=9100):
         env = get_test_env()
-        cb = make_cheque_book(9100, 9110)
+        cb = make_cheque_book(start, start + 10)
         cb.submit()
         chq = _outgoing(cb, env["company"], env["customer"], env["currency"])
         chq.submit()
@@ -396,16 +396,20 @@ class TestChequeEventLogging(FrappeTestCase):
 
     # ------------------------------------------------------------------ #
 
-    def test_outgoing_submit_logs_received_not_a_second_created(self):
+    def test_outgoing_submit_logs_issued_not_a_second_created(self):
         """Outgoing submit used to append a SECOND 'Created' event, duplicating
         after_insert's and leaving the Draft → Received transition unrecorded."""
-        chq = self._outgoing_submitted()
+        chq = self._outgoing_submitted(start=9100)
 
         created = self._events(chq.name, "Created")
-        received = self._events(chq.name, "Received")
+        # §4.1 — an outgoing cheque is Issued on submit, not "Received".
+        issued = self._events(chq.name, "Issued")
 
+        self.assertEqual(chq.status, "Issued")
         self.assertEqual(len(created), 1, f"expected one Created event, got {created}")
-        self.assertEqual(len(received), 1, f"expected one Received event, got {received}")
+        self.assertEqual(len(issued), 1, f"expected one Issued event, got {issued}")
+        self.assertEqual(self._events(chq.name, "Received"), [],
+                         "outgoing cheque must not log an incoming 'Received' event")
 
     def test_incoming_submit_logs_exactly_one_received(self):
         chq = self._incoming()
@@ -451,7 +455,7 @@ class TestChequeEventLogging(FrappeTestCase):
     def test_submit_then_cancel_in_one_flow(self):
         """_flush_events bumped `modified` without resyncing the in-memory doc,
         so submit() followed by cancel() raised TimestampMismatchError."""
-        chq = self._outgoing_submitted()
+        chq = self._outgoing_submitted(start=9150)
         chq.cancel()
         self.assertEqual(frappe.db.get_value("Cheque", chq.name, "docstatus"), 2)
 

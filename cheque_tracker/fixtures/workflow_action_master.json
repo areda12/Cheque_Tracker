@@ -1,10 +1,15 @@
 [
   {"doctype": "Workflow Action Master", "name": "Receive",       "workflow_action_name": "Receive"},
+  {"doctype": "Workflow Action Master", "name": "Issue",         "workflow_action_name": "Issue"},
   {"doctype": "Workflow Action Master", "name": "Move to Safe",  "workflow_action_name": "Move to Safe"},
   {"doctype": "Workflow Action Master", "name": "Deposit",       "workflow_action_name": "Deposit"},
+  {"doctype": "Workflow Action Master", "name": "Cash Clear",    "workflow_action_name": "Cash Clear"},
+  {"doctype": "Workflow Action Master", "name": "Endorse",       "workflow_action_name": "Endorse"},
   {"doctype": "Workflow Action Master", "name": "Hand Over",     "workflow_action_name": "Hand Over"},
+  {"doctype": "Workflow Action Master", "name": "Present",       "workflow_action_name": "Present"},
   {"doctype": "Workflow Action Master", "name": "Clear",         "workflow_action_name": "Clear"},
   {"doctype": "Workflow Action Master", "name": "Bounce",        "workflow_action_name": "Bounce"},
+  {"doctype": "Workflow Action Master", "name": "Re-deposit",    "workflow_action_name": "Re-deposit"},
   {"doctype": "Workflow Action Master", "name": "Return",        "workflow_action_name": "Return"},
   {"doctype": "Workflow Action Master", "name": "Replace",       "workflow_action_name": "Replace"},
   {"doctype": "Workflow Action Master", "name": "Cancel Cheque", "workflow_action_name": "Cancel Cheque"}

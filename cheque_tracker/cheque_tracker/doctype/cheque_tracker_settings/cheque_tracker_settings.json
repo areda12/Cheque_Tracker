@@ -6,7 +6,13 @@
  "engine": "InnoDB",
  "field_order": [
   "default_bank_account",
-  "default_bank_gl_account"
+  "default_bank_gl_account",
+  "default_cash_account",
+  "section_reminders",
+  "reminder_days",
+  "notify_emails",
+  "section_gl",
+  "gl_posting_model"
  ],
  "fields": [
   {
@@ -29,6 +35,38 @@
    "label": "Default Cash Account",
    "options": "Account",
    "description": "Default GL Cash account used when cashing cheques at teller. Can be overridden per cheque."
+  },
+  {
+   "fieldname": "section_reminders",
+   "fieldtype": "Section Break",
+   "label": "Reminders"
+  },
+  {
+   "fieldname": "reminder_days",
+   "fieldtype": "Int",
+   "label": "Reminder Days",
+   "default": "3",
+   "description": "Cheques due within this many days are included in the daily digest."
+  },
+  {
+   "fieldname": "notify_emails",
+   "fieldtype": "Small Text",
+   "label": "Notify Emails",
+   "description": "Comma or newline separated recipients for the daily cheque digest."
+  },
+  {
+   "fieldname": "section_gl",
+   "fieldtype": "Section Break",
+   "label": "General Ledger"
+  },
+  {
+   "fieldname": "gl_posting_model",
+   "fieldtype": "Select",
+   "label": "GL Posting Model",
+   "options": "Payment Entry only",
+   "default": "Payment Entry only",
+   "read_only": 1,
+   "description": "Placeholder. v1.2 posts no GL from the tracker itself — the linked Payment Entry is the only posting document. A future release may add a Notes Receivable model; see README."
   }
  ],
  "issingle": 1,

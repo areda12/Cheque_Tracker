@@ -1,5 +1,121 @@
 # CHANGELOG
 
+## v1.2.0 — State model + accounting integration (2026-08-10)
+
+Feature release. Adds a schema migration and changes where the general ledger
+posting comes from — read the accounting note below before deploying.
+
+### Status vocabulary (§4.1) — BREAKING for anything filtering on status
+
+Both directions shared one status list, so an *issued* outgoing cheque landed in
+**Received** — which reads as "we were given a cheque", the opposite of what
+happened. Root cause of the outgoing dashboard-filter bugs and of persistent user
+confusion.
+
+- Status options are now the superset: `Draft, Received, In Safe, Deposited,
+  Endorsed, Issued, Handed Over, Presented, Cleared, Bounced, Returned,
+  Cancelled, Replaced`.
+- **Incoming:** Draft → Received → (In Safe) → Deposited → Cleared / Bounced /
+  Returned, plus Endorsed and the cash path.
+- **Outgoing:** Draft → Issued → Handed Over → (Presented) → Cleared / Bounced /
+  Returned.
+- Workflow rebuilt: 13 states, 31 transitions. The phantom `Submit` action —
+  which had no Workflow Action Master and survived only because fixture import
+  sets `ignore_links` — is gone.
+- Migration patch `v3_3.split_status_vocabulary` moves existing Outgoing cheques
+  from `Received` to `Issued` and rewrites their timeline rows to match, so the
+  audit trail cannot contradict the document. Incoming cheques are untouched.
+- All cards and charts updated to the new vocabulary.
+
+### Cash clearance (§4.2)
+
+`clearance_type = Cash` and `cash_account` existed since v1.1.4 but **no
+transition used them** — a cash cheque could never reach Cleared by any route.
+Added `Received / In Safe → Cash Clear → Cleared`, and depositing a cash cheque
+is now refused so the two paths cannot both fire.
+
+### Endorsement — تظهير (§4.3)
+
+An incoming cheque signed over to a supplier as payment: standard Egyptian
+practice, previously unrepresentable.
+
+- New fields: `endorsed_to_party_type`, `endorsed_to_party`,
+  `endorsed_to_other_name`, `endorsement_date`, `endorsement_payment_entry`.
+- `Received / In Safe → Endorse → Endorsed`, requiring the counterparty and date,
+  clearing the internal custodian and logging the counterparty.
+- New **Endorsed** dashboard card. An endorsed cheque is deliberately excluded
+  from Pending Receivable — once endorsed it is no longer our receivable.
+
+### Bounce handling (§4.4)
+
+- `bounce_reason` (Insufficient Funds / Signature Mismatch / Account Closed /
+  Technical / Other) is **required** by the Bounce action and surfaces in the
+  Bounced Cheques Register.
+- New `Bounced → Re-deposit → Deposited` transition — banks re-present PDCs
+  routinely, so Bounced is not a terminal state.
+
+### Accounting (§4.5) — the tracker no longer posts to the general ledger
+
+**Read this before deploying.** v1.1.x posted a clearance Journal Entry
+(`Dr Bank / Cr Debtors`) when a cheque cleared. v1.2 implements EEI's confirmed
+model instead: **the Payment Entry stays draft until the cheque is collected, and
+clearing the cheque submits it.** A submitted Payment Entry posts that same
+entry itself — keeping both would double-post every collection.
+
+- `make_clearance_je` is removed. The linked Payment Entry is the only posting
+  document (§4.5.5). `cancel_clearance_je` and the read-only `clearance_je` field
+  remain so cheques cleared under v1.1.x can still be unwound.
+- **Auto-create:** a draft Payment Entry with `mode_of_payment = Cheque` spawns a
+  Draft Cheque prefilled from it, exactly once, and edits to the draft PE sync
+  onto the still-draft cheque.
+- **Clear ⇒ settle:** clearing stamps `cleared_date` and submits the linked draft
+  PE through its workflow. If the acting user may not approve it, the cheque
+  still clears, `pe_pending_submission` is flagged and a ToDo is raised for
+  someone holding the approving role — the approval gate is never forced.
+- **Validation:** amount mismatch between Cheque and Payment Entry throws; party
+  and cheque-number mismatches warn.
+- **Duplicate guard:** blocks a second non-cancelled Cheque with the same
+  `cheque_no` + `drawee_bank` + `cheque_type`.
+- **A cheque with no accounting document behind it can no longer be cleared.**
+  Since the Payment Entry is now the only posting document, clearing a cheque
+  with neither a Payment Entry nor a Journal Entry linked would record a
+  collection the ledger never hears about. Clear and Cash Clear refuse it — on
+  both the workflow path and the whitelisted UI endpoint, since the latter writes
+  with `frappe.db.set_value` and would otherwise bypass a form-only check.
+  A **System Manager** can override deliberately via the new
+  `clearance_override` flag plus a reason; the override writes a Cheque Event
+  naming who authorised it and quoting the reason, and only a System Manager can
+  set the flag. See `DECISIONS.md` D2.
+- `Cheque Tracker Settings.gl_posting_model` is a read-only placeholder for a
+  future Notes Receivable model.
+
+### Arabic (§4.7)
+
+`translations/ar.csv` ships **201 app-unique entries**. The app deliberately
+translates **only strings that frappe and erpnext do not**: Frappe's translation
+namespace is flat, so an app-level entry rewrites that string for every app on
+the site. 39 entries that shadowed core were removed — including `Issue` and
+`Clear`, which were right for a cheque and wrong for Material Issue and for
+clearing a field.
+
+`tests/verify_translations.py` enforces the rule against the 16,069 msgids in
+`frappe/locale/ar.po` and `erpnext/locale/ar.po`, in the suite and as
+`bench execute cheque_tracker.tests.verify_translations.run`, so it cannot
+regress. The trade-off is documented in `DECISIONS.md` D10: a few genuinely poor
+core translations now render as core has them.
+
+### Other
+
+- `drawee_bank` is required from submit onward rather than on every save — a
+  Payment Entry records the cheque number but has nowhere to say which bank
+  issued it, so the old rule made auto-creation impossible. Unchanged for any
+  submitted cheque.
+- Settings gained `reminder_days` (default 3) and `notify_emails`;
+  `default_cash_account` now actually renders (it was missing from `field_order`).
+- Client: a generic wrapper persists the fields a transition depends on *before*
+  applying it — `apply_workflow` reloads from the database and discards unsaved
+  edits — used by the new Endorse, Bounce and Cash Clear actions.
+
 ## v1.1.6 — Dashboard fixture repair, workflow event logging, custody & counters (2026-08-10)
 
 Bug-fix release. No schema-breaking changes; one new optional field and one
