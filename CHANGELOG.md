@@ -76,11 +76,33 @@ entry itself — keeping both would double-post every collection.
   and cheque-number mismatches warn.
 - **Duplicate guard:** blocks a second non-cancelled Cheque with the same
   `cheque_no` + `drawee_bank` + `cheque_type`.
-- A cheque with **no** linked Payment Entry now posts nothing when it clears.
-  That is deliberate, and it is announced with a visible message and a timeline
-  entry rather than passing silently. See `DECISIONS.md` D2.
+- **A cheque with no accounting document behind it can no longer be cleared.**
+  Since the Payment Entry is now the only posting document, clearing a cheque
+  with neither a Payment Entry nor a Journal Entry linked would record a
+  collection the ledger never hears about. Clear and Cash Clear refuse it — on
+  both the workflow path and the whitelisted UI endpoint, since the latter writes
+  with `frappe.db.set_value` and would otherwise bypass a form-only check.
+  A **System Manager** can override deliberately via the new
+  `clearance_override` flag plus a reason; the override writes a Cheque Event
+  naming who authorised it and quoting the reason, and only a System Manager can
+  set the flag. See `DECISIONS.md` D2.
 - `Cheque Tracker Settings.gl_posting_model` is a read-only placeholder for a
   future Notes Receivable model.
+
+### Arabic (§4.7)
+
+`translations/ar.csv` ships **201 app-unique entries**. The app deliberately
+translates **only strings that frappe and erpnext do not**: Frappe's translation
+namespace is flat, so an app-level entry rewrites that string for every app on
+the site. 39 entries that shadowed core were removed — including `Issue` and
+`Clear`, which were right for a cheque and wrong for Material Issue and for
+clearing a field.
+
+`tests/verify_translations.py` enforces the rule against the 16,069 msgids in
+`frappe/locale/ar.po` and `erpnext/locale/ar.po`, in the suite and as
+`bench execute cheque_tracker.tests.verify_translations.run`, so it cannot
+regress. The trade-off is documented in `DECISIONS.md` D10: a few genuinely poor
+core translations now render as core has them.
 
 ### Other
 

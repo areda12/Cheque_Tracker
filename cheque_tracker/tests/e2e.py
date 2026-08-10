@@ -28,7 +28,49 @@ def _unique_no(prefix):
     return f"{prefix}-{frappe.generate_hash(length=8)}"
 
 
-def make_incoming(env=None, submit=True, **overrides):
+def attach_payment_entry(cheque, env=None):
+    """Link a draft Payment Entry to `cheque`, the way real data looks.
+
+    Since the clearance gate landed, a cheque with no Payment Entry or Journal
+    Entry cannot be cleared at all — so every scenario that ends in Cleared needs
+    one, and building them this way keeps the matrix on the intended flow rather
+    than on the System Manager override.
+
+    `mode_of_payment` is deliberately left blank: setting it to "Cheque" would
+    trip the §4.5.1 mirror hook and spawn a *second* Cheque for this PE. The
+    mirror has its own tests; here we just need the link.
+    """
+    env = env or get_test_env()
+    receive = cheque.cheque_type == "Incoming"
+
+    pe = frappe.get_doc(
+        {
+            "doctype": "Payment Entry",
+            "payment_type": "Receive" if receive else "Pay",
+            "company": env["company"],
+            "posting_date": today(),
+            "party_type": cheque.party_type,
+            "party": cheque.party,
+            "paid_from": env["debtors"] if receive else env["bank_gl_account"],
+            "paid_to": env["bank_gl_account"] if receive else env["creditors"],
+            "paid_amount": flt(cheque.amount),
+            "received_amount": flt(cheque.amount),
+            "source_exchange_rate": 1,
+            "target_exchange_rate": 1,
+            "reference_no": cheque.cheque_no,
+            "reference_date": cheque.due_date,
+        }
+    )
+    pe.flags.ignore_permissions = True
+    pe.insert(ignore_permissions=True)
+
+    cheque.db_set("reference_doctype", "Payment Entry", update_modified=False)
+    cheque.db_set("reference_name", pe.name, update_modified=False)
+    cheque.reload()
+    return pe
+
+
+def make_incoming(env=None, submit=True, with_payment_entry=True, **overrides):
     env = env or get_test_env()
     cheque = frappe.new_doc("Cheque")
     cheque.update(
@@ -53,10 +95,12 @@ def make_incoming(env=None, submit=True, **overrides):
     if submit:
         cheque.submit()
         cheque.reload()
+    if with_payment_entry:
+        attach_payment_entry(cheque, env)
     return cheque
 
 
-def make_outgoing(env=None, submit=True, start=None, **overrides):
+def make_outgoing(env=None, submit=True, start=None, with_payment_entry=True, **overrides):
     env = env or get_test_env()
     from cheque_tracker.cheque_tracker.doctype.cheque_book.test_cheque_book import (
         make_cheque_book,
@@ -92,6 +136,8 @@ def make_outgoing(env=None, submit=True, start=None, **overrides):
     if submit:
         cheque.submit()
         cheque.reload()
+    if with_payment_entry:
+        attach_payment_entry(cheque, env)
     return cheque
 
 

@@ -46,13 +46,27 @@ so `make_clearance_je` is deleted. `cancel_clearance_je` is kept: cheques cleare
 under v1.1.x still carry a `clearance_je` link that must be unwound if they are
 ever cancelled, and the `clearance_je` field is kept read-only for that history.
 
-**Consequence, stated plainly:** a cheque with no linked Payment Entry now
-produces *no* accounting entry when it clears. That is the documented v1.2
-behaviour, not an oversight. Production CHQ-2026-00001 (the outgoing electricity
-cheque) is exactly such a cheque. Rather than let that pass silently, clearing a
-cheque with no linked PE raises a visible orange message saying nothing was
-posted and the collection must be recorded separately, and writes a Cheque Event
-saying the same thing. Silence is what turns this into a year-end discovery.
+**Consequence, and how it is handled — amended after review.** A cheque with no
+linked Payment Entry would clear with *no* accounting entry at all: recorded as
+collected while the books never hear about it. The first cut warned about this
+and let it through. Ahmed's call, and the right one: **a warning on a screen is
+not a control.** Clear and Cash Clear now *refuse* the transition when the cheque
+has neither a Payment Entry nor a Journal Entry behind it.
+
+Both transition paths are gated — the workflow save through
+`before_update_after_submit`, and the whitelisted UI endpoint through
+`_validate_transition` — because `change_cheque_status` writes with
+`frappe.db.set_value` and would otherwise sail straight past a form-only check.
+
+A **System Manager** can still clear such a cheque deliberately: tick
+`clearance_override`, give a reason, and the clearance goes through. The override
+is not silent — it writes a Cheque Event naming the user who authorised it and
+quoting their reason, and only a System Manager can set the flag (checked on
+every save, so it cannot be pre-set by someone else and relied on later).
+
+Production CHQ-2026-00001 (the outgoing electricity cheque, no PE link) is
+exactly the case this catches. It will refuse to clear until someone either links
+the Payment Entry or consciously overrides.
 
 `Cheque Tracker Settings.gl_posting_model` is the placeholder §4.5.5 asks for —
 read-only, single option "Payment Entry only" — so a future Notes Receivable
@@ -162,29 +176,38 @@ more likely than that intent. One-line reversal if Ahmed wants 0 honoured.
 
 ---
 
-## D10 — Arabic translations are site-wide, and two entries override ERPNext
+## D10 — Arabic translations are site-wide, so the app translates only what core does not
 
-Frappe's translation namespace is flat: an app's `ar.csv` applies to every app on
-the site. Most of what `cheque_tracker` ships is a repair — ERPNext's own Arabic
-has `Due Date` → "بسبب تاريخ" (nonsense), `Draft` → "مشروع" ("project"),
-`Amount` → "كمية" ("quantity") — but two entries are genuinely context-dependent
-and worth Ahmed's eye before production:
+Frappe's translation namespace is flat: an entry in an app's `ar.csv` overrides
+that source string for **every** app on the site. The first cut shipped
+corrections for generic strings and flagged two (`Issue`, `Clear`) as
+context-dependent risks.
 
-| String | Ours | Right for | Wrong for |
-|---|---|---|---|
-| `Issue` | إصدار | issuing a cheque | ERPNext's Material Issue (صرف), the Issue doctype |
-| `Clear` | تحصيل | clearing a cheque | anywhere "Clear" means "empty a field" |
+Ahmed's call, applied here: **no entry may shadow a string that frappe or erpnext
+already translates.** Not just those two — the rule is categorical, because the
+next well-meaning correction has the same failure mode. 39 entries were removed;
+201 app-unique ones remain.
 
-Both are workflow action names §4.7 explicitly requires translating, and Frappe
-offers no context key that a bare `_()` call site would match, so this cannot be
-resolved inside the CSV. If the Arabic desk UI matters for other apps on
-`aldar`, drop those two rows — everything else is safe.
+`cheque_tracker/tests/verify_translations.py` enforces it, comparing `ar.csv`
+against the msgids in `frappe/locale/ar.po` and `erpnext/locale/ar.po` (16,069
+strings). It runs in the suite and standalone:
 
-The file carries 240 entries rather than the 60–90 §4.7 estimated. The six
-mandatory coverage bullets alone (13 statuses + 14 workflow actions + 5 bounce
-reasons + 7 doctype names + report labels + every `frappe.throw`/`msgprint` in the
-Cheque controller) require ~190 strings; the estimate undercounted the surface.
-Coverage was treated as the requirement and the number as the estimate.
+    bench --site <site> execute cheque_tracker.tests.verify_translations.run
+
+**The cost, stated plainly.** Some of the removed corrections were fixing genuinely
+bad core Arabic — `Draft` → "مشروع" ("project"), `Due Date` → "بسبب تاريخ"
+(nonsense), `Amount` → "كمية" ("quantity"), `Custodian` → "وصي" ("legal
+guardian"). Those now render with core's wording again. That is the deliberate
+trade: this app does not get to silently rewrite the Arabic of the whole site,
+and core's mistakes belong upstream. If EEI wants them fixed, the route is a PR
+to frappe/erpnext or a site-level Translation record — not an app override.
+
+Words the app genuinely owns (تظهير, دفتر شيكات, مُظهَّر, عدم كفاية الرصيد, the
+workflow actions it invented, and every one of its own messages) are unaffected.
+
+The completeness checks now assert that each status, workflow action and bounce
+reason has Arabic from *somewhere* — ours or core's — so a new untranslated
+status still turns the suite red.
 
 ---
 

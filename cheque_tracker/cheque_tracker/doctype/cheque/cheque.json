@@ -55,6 +55,8 @@
   "section_financial_posting",
   "clearance_je",
   "pe_pending_submission",
+  "clearance_override",
+  "clearance_override_reason",
   "col_break_replacement",
   "replacement_cheque",
   "original_cheque",
@@ -383,6 +385,22 @@
    "allow_on_submit": 1,
    "default": "0",
    "description": "The cheque cleared but its linked Payment Entry could not be submitted by the acting user. A ToDo was assigned to the approver."
+  },
+  {
+   "fieldname": "clearance_override",
+   "fieldtype": "Check",
+   "label": "Clear Without Accounting Document",
+   "allow_on_submit": 1,
+   "default": "0",
+   "description": "System Manager only. Allows this cheque to clear with no linked Payment Entry or Journal Entry — nothing will be posted to the ledger."
+  },
+  {
+   "fieldname": "clearance_override_reason",
+   "fieldtype": "Small Text",
+   "label": "Override Reason",
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.clearance_override",
+   "mandatory_depends_on": "eval:doc.clearance_override"
   },
   {
    "fieldname": "col_break_replacement",

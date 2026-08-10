@@ -235,23 +235,136 @@ class TestPaymentEntryIntegration(FrappeTestCase):
         )
         self.assertTrue(todos, "no ToDo was raised for the pending Payment Entry")
 
-    def test_clear_with_no_payment_entry_posts_nothing(self):
-        """§4.5.5 / D2 — documented behaviour, announced rather than silent."""
-        cheque = e2e.make_incoming()
+    # ---- clearance requires something that posts (D2, amended) ------- #
+
+    def test_clear_is_blocked_without_an_accounting_document(self):
+        """Refused, not warned: a cheque with nothing linked would be recorded
+        as collected while the ledger never hears about it."""
+        cheque = e2e.make_incoming(with_payment_entry=False)
         e2e.act(cheque, "Deposit")
+
+        with self.assertRaises(frappe.ValidationError):
+            e2e.act(cheque, "Clear")
+
+        cheque.reload()
+        self.assertEqual(cheque.status, "Deposited", "the cheque must not have moved")
+
+    def test_cash_clear_is_blocked_without_an_accounting_document(self):
+        cheque = e2e.make_incoming(
+            with_payment_entry=False,
+            clearance_type="Cash",
+            cash_account=self.env["cash_account"],
+        )
+        with self.assertRaises(frappe.ValidationError):
+            e2e.act(cheque, "Cash Clear")
+
+        cheque.reload()
+        self.assertEqual(cheque.status, "Received")
+
+    def test_ui_path_is_blocked_too(self):
+        """change_cheque_status writes with db.set_value, so it needs its own
+        gate — otherwise the block would be a form-only illusion."""
+        from cheque_tracker.cheque_tracker.doctype.cheque.cheque import change_cheque_status
+
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        e2e.act(cheque, "Deposit")
+
+        with self.assertRaises(frappe.ValidationError):
+            change_cheque_status(cheque.name, "Cleared")
+
+        self.assertEqual(frappe.db.get_value("Cheque", cheque.name, "status"), "Deposited")
+
+    def test_system_manager_can_override_and_it_is_logged(self):
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        e2e.act(cheque, "Deposit")
+
+        e2e.set_fields(
+            cheque,
+            clearance_override=1,
+            clearance_override_reason="Collected in cash at the branch; posted by journal in the legacy system.",
+        )
         e2e.act(cheque, "Clear")
 
         self.assertEqual(cheque.status, "Cleared")
-        self.assertFalse(cheque.clearance_je, "v1.2 must not post a clearance Journal Entry")
+        self.assertFalse(cheque.clearance_je, "the override must not conjure a posting")
+
         notes = frappe.get_all(
             "Cheque Event",
             filters={"parent": cheque.name, "event_type": "Note"},
             pluck="notes",
         )
-        self.assertTrue(
-            any("no linked Payment Entry" in (n or "") for n in notes),
-            f"clearing without a PE must be recorded on the timeline; got {notes}",
+        override_note = next((n for n in notes if "Override authorised by" in (n or "")), None)
+        self.assertIsNotNone(override_note, f"override not recorded on the timeline; got {notes}")
+        self.assertIn(frappe.session.user, override_note, "the note must name who overrode")
+        self.assertIn("legacy system", override_note, "the note must carry the reason")
+
+    def test_override_requires_a_reason(self):
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        with self.assertRaises(frappe.ValidationError):
+            e2e.set_fields(cheque, clearance_override=1)
+
+    def test_override_is_refused_to_a_non_system_manager(self):
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        frappe.set_user(PE_CLERK_USER)
+        try:
+            with self.assertRaises(frappe.PermissionError):
+                e2e.set_fields(
+                    cheque, clearance_override=1, clearance_override_reason="let me through"
+                )
+        finally:
+            frappe.set_user("Administrator")
+
+    def test_a_journal_entry_also_satisfies_the_gate(self):
+        """§4.5 names the Payment Entry, but a cheque carrying a v1.1.x
+        clearance Journal Entry is equally backed by something that posted."""
+        from cheque_tracker.cheque_tracker.doctype.cheque import cheque_financial
+
+        cheque = e2e.make_incoming(with_payment_entry=False)
+        je = frappe.get_doc(
+            {
+                "doctype": "Journal Entry",
+                "voucher_type": "Bank Entry",
+                "company": self.env["company"],
+                "posting_date": today(),
+                "cheque_no": cheque.cheque_no,
+                "cheque_date": today(),
+                "accounts": [
+                    {"account": self.env["bank_gl_account"], "debit_in_account_currency": cheque.amount},
+                    {
+                        "account": self.env["debtors"],
+                        "credit_in_account_currency": cheque.amount,
+                        "party_type": "Customer",
+                        "party": self.env["customer"],
+                    },
+                ],
+            }
         )
+        je.flags.ignore_permissions = True
+        je.insert(ignore_permissions=True)
+        cheque.db_set("clearance_je", je.name, update_modified=False)
+        cheque.reload()
+
+        self.assertIsNotNone(cheque_financial.linked_accounting_document(cheque))
+        e2e.act(cheque, "Deposit")
+        e2e.act(cheque, "Clear")
+        self.assertEqual(cheque.status, "Cleared")
+
+    def test_normal_pe_linked_path_still_clears(self):
+        """The ordinary case must be untouched by the gate."""
+        pe = self._draft_pe(amount=2100.0)
+        cheque = frappe.get_doc("Cheque", self._cheque_for(pe.name))
+        cheque.drawee_bank = self.env["drawee_bank"]
+        cheque.bank_account = self.env["bank_account"]
+        cheque.flags.ignore_permissions = True
+        cheque.save(ignore_permissions=True)
+        cheque.submit()
+
+        e2e.act(cheque, "Deposit")
+        e2e.act(cheque, "Clear")
+
+        self.assertEqual(cheque.status, "Cleared")
+        self.assertFalse(cheque.clearance_override, "no override should have been needed")
+        self.assertEqual(frappe.db.get_value("Payment Entry", pe.name, "docstatus"), 1)
 
     def test_no_clearance_journal_entry_is_created(self):
         """D2 — the tracker posts no GL in v1.2; the PE is the only posting doc."""

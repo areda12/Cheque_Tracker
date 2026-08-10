@@ -20,11 +20,15 @@ Entry describe the same event. `make_clearance_je` is therefore gone;
 `cancel_clearance_je` stays, because cheques cleared under v1.1.x still carry a
 `clearance_je` link that must be unwound if they are ever cancelled.
 
-A cheque with no linked Payment Entry produces no accounting entry at all when
-it clears. That is the documented v1.2 behaviour, not an oversight — but it is
-announced loudly (see `settle_linked_payment_entry`) rather than passing in
-silence, because an untracked collection is exactly the kind of thing that
-should not be discovered at year end.
+Because all posting moved to the Payment Entry, a cheque with nothing linked
+would clear with no ledger effect whatsoever — recorded as collected while the
+books never hear about it. That is **refused**, not warned about: a warning on a
+screen is not a control, and an untracked collection is exactly the kind of thing
+that gets discovered at year end. See `validate_clearance_has_accounting_document`.
+
+A System Manager can still clear such a cheque deliberately by ticking
+`clearance_override` and giving a reason; the override is recorded as a Cheque
+Event naming them.
 """
 
 import frappe
@@ -34,6 +38,92 @@ from frappe import _
 # Fields whose disagreement between a Cheque and its Payment Entry is a hard
 # error rather than a warning.
 _AMOUNT_TOLERANCE = 0.005
+
+# A cheque that clears must be backed by something that posts. `reference_doctype`
+# is a plain Link to DocType and can legitimately point at a Sales Invoice or a
+# Delivery Note — neither of which posts on clearance — so only these two count.
+ACCOUNTING_DOCTYPES = ("Payment Entry", "Journal Entry")
+
+# Who may waive that requirement.
+CLEARANCE_OVERRIDE_ROLE = "System Manager"
+
+
+def linked_accounting_document(cheque):
+    """The document that will post when this cheque clears, or None.
+
+    Accepts either a Cheque Document or any dict-like view of one, because the
+    UI transition path validates before the status is written and passes a
+    shadow copy.
+    """
+    reference_doctype = cheque.get("reference_doctype")
+    reference_name = cheque.get("reference_name")
+    if reference_doctype in ACCOUNTING_DOCTYPES and reference_name:
+        if frappe.db.exists(reference_doctype, reference_name):
+            return (reference_doctype, reference_name)
+
+    # Cheques cleared under v1.1.x carry their own Journal Entry.
+    clearance_je = cheque.get("clearance_je")
+    if clearance_je and frappe.db.exists("Journal Entry", clearance_je):
+        return ("Journal Entry", clearance_je)
+
+    return None
+
+
+def validate_clearance_override(cheque):
+    """Only a System Manager may waive the accounting-document requirement.
+
+    Checked on every save rather than only at clearance, so the flag cannot be
+    quietly set by a Treasury user in advance and then relied on later.
+    """
+    if not cheque.get("clearance_override"):
+        return
+
+    if CLEARANCE_OVERRIDE_ROLE not in frappe.get_roles(frappe.session.user):
+        frappe.throw(
+            _(
+                "Only a {0} can allow a cheque to clear without an accounting document."
+            ).format(CLEARANCE_OVERRIDE_ROLE),
+            frappe.PermissionError,
+            title=_("Override not permitted"),
+        )
+
+    if not (cheque.get("clearance_override_reason") or "").strip():
+        frappe.throw(
+            _("Give a reason for clearing without an accounting document."),
+            frappe.ValidationError,
+        )
+
+
+def validate_clearance_has_accounting_document(cheque):
+    """Block a clearance that would post nothing.
+
+    v1.2 moved all posting to the linked Payment Entry (DECISIONS.md D2). A
+    cheque with nothing linked therefore clears without any ledger effect at
+    all — the money is recorded as collected and the books never hear about it.
+    That used to be a warning; it is now refused, because a warning on a screen
+    is not a control.
+
+    A System Manager can still override deliberately (`clearance_override` plus a
+    reason), which is logged as a Cheque Event naming them.
+    """
+    if linked_accounting_document(cheque):
+        return
+
+    if cheque.get("clearance_override"):
+        validate_clearance_override(cheque)
+        return
+
+    frappe.throw(
+        _(
+            "Cheque {0} has no linked Payment Entry or Journal Entry, so clearing it "
+            "would post nothing to the ledger.<br><br>"
+            "Link the Payment Entry that records this collection, or — if the "
+            "accounting really is handled elsewhere — a {1} can tick "
+            "<b>Clear Without Accounting Document</b> and give a reason."
+        ).format(cheque.get("name") or _("(new)"), CLEARANCE_OVERRIDE_ROLE),
+        frappe.ValidationError,
+        title=_("Nothing would be posted"),
+    )
 
 
 def validate_payment_entry_link(cheque):
@@ -214,14 +304,9 @@ def settle_linked_payment_entry(cheque):
       "none"       — no Payment Entry is linked
     """
     if cheque.reference_doctype != "Payment Entry" or not cheque.reference_name:
-        frappe.msgprint(
-            _(
-                "Cheque {0} cleared with no linked Payment Entry, so nothing was posted "
-                "to the ledger. Record the collection separately."
-            ).format(cheque.name),
-            title=_("No accounting entry"),
-            indicator="orange",
-        )
+        # Reaching here means validate_clearance_has_accounting_document let it
+        # through, i.e. a System Manager overrode deliberately. The caller logs
+        # the override on the timeline.
         return "none"
 
     if not frappe.db.exists("Payment Entry", cheque.reference_name):

@@ -81,6 +81,7 @@ class Cheque(Document):
         self._validate_outgoing_cheque_no()
         cheque_financial.validate_duplicate_cheque(self)
         cheque_financial.validate_payment_entry_link(self)
+        cheque_financial.validate_clearance_override(self)
 
     def before_update_after_submit(self):
         """Gate submitted-state transitions BEFORE the row is written.
@@ -93,6 +94,7 @@ class Cheque(Document):
         if before and before.status != self.status:
             _validate_status_requirements(self, self.status)
         cheque_financial.validate_payment_entry_link(self)
+        cheque_financial.validate_clearance_override(self)
 
     def before_submit(self):
         # Which bank the cheque is drawn on is required to track an incoming
@@ -281,7 +283,14 @@ class Cheque(Document):
             "submitted": f"Payment Entry {self.reference_name} submitted on clearance.",
             "already":   f"Payment Entry {self.reference_name} was already submitted; clearance date stamped.",
             "pending":   f"Payment Entry {self.reference_name} could not be submitted by {frappe.session.user}; a ToDo was raised for the approver.",
-            "none":      "Cleared with no linked Payment Entry — nothing was posted to the ledger.",
+            # "none" is only reachable through the System Manager override — the
+            # transition is refused otherwise — so name who took responsibility.
+            "none": (
+                "Cleared with NO accounting document. Override authorised by "
+                f"{frappe.session.user}. Reason: "
+                f"{(self.clearance_override_reason or '').strip() or '(none given)'}. "
+                "Nothing was posted to the ledger; record the collection separately."
+            ),
         }.get(outcome)
 
         if notes:
@@ -706,6 +715,13 @@ def _validate_status_requirements(doc, new_status: str):
             )
 
     if new_status == "Cleared":
+        # A clearance that posts nothing is refused outright (amended after
+        # review): v1.2 moved all posting to the linked Payment Entry, so a
+        # cheque with nothing linked would be recorded as collected while the
+        # books never hear about it. A System Manager can still override.
+        cheque_financial.validate_clearance_has_accounting_document(
+            _with_status(doc, "Cleared")
+        )
         if doc.clearance_type == "Cash":
             if not doc.cash_account:
                 frappe.throw(

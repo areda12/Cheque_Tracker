@@ -443,8 +443,48 @@ function _wrap_v12_actions(frm) {
                 default: f.doc.cleared_date || frappe.datetime.get_today(),
                 reqd: 1,
             },
+            ..._clearance_override_fields(f),
         ],
     });
+}
+
+
+// A cheque with no Payment Entry or Journal Entry behind it posts nothing when
+// it clears, so the server refuses the transition. Only a System Manager can
+// waive that, and only with a reason — which is recorded on the timeline. The
+// fields appear only when they are actually needed, so the normal path is
+// unchanged.
+function _clearance_override_fields(frm) {
+    const has_accounting_doc =
+        (["Payment Entry", "Journal Entry"].includes(frm.doc.reference_doctype) &&
+            frm.doc.reference_name) ||
+        frm.doc.clearance_je;
+
+    if (has_accounting_doc) return [];
+    if (!frappe.user.has_role("System Manager")) return [];
+
+    return [
+        { fieldtype: "Section Break" },
+        {
+            fieldtype: "HTML",
+            options: `<div class="alert alert-warning" style="margin-bottom:10px">${__(
+                "This cheque has no linked Payment Entry or Journal Entry. Clearing it will post nothing to the ledger."
+            )}</div>`,
+        },
+        {
+            fieldname: "clearance_override",
+            fieldtype: "Check",
+            label: __("Clear Without Accounting Document"),
+            default: 0,
+        },
+        {
+            fieldname: "clearance_override_reason",
+            fieldtype: "Small Text",
+            label: __("Override Reason"),
+            depends_on: "eval:doc.clearance_override",
+            mandatory_depends_on: "eval:doc.clearance_override",
+        },
+    ];
 }
 
 
@@ -486,6 +526,7 @@ function _wrap_clear_action(frm) {
                     default: frm.doc.bank_account,
                     reqd: 1,
                 },
+                ..._clearance_override_fields(frm),
             ],
             primary_action_label: __("Confirm Clearing"),
             primary_action(values) {

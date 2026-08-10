@@ -16,21 +16,27 @@ LANG = "ar"
 
 # Floor, not a target. Raising it every time a string is added turns the test
 # into a changelog; it exists to catch a truncated or half-written csv.
-MIN_ENTRIES = 200
+MIN_ENTRIES = 180
 
 # Terminology anchors. These are the accounting terms the Egyptian treasury
 # staff actually use -- a wrong term here mis-describes a posting, so they are
 # pinned rather than left to whoever edits the csv next.
+#
+# Only strings the app OWNS may appear here. Cheque, Bounced, Cleared, Deposit,
+# Due Date and friends were dropped from ar.csv because frappe/erpnext already
+# translate them and Frappe's translation namespace is site-wide -- overriding
+# them changes the Arabic for every other app on the site. See
+# tests/verify_translations.py and DECISIONS.md D10.
 ANCHORS = {
-    "Cheque": "شيك",
     "Cheque Book": "دفتر شيكات",
     "Endorsed": "مُظهَّر",
-    "Bounced": "مرتجع",
-    "Cleared": "محصل",
-    "Deposit": "إيداع",
+    "Endorse": "تظهير",
     "Hand Over": "تسليم",
-    "Custody": "العهدة",
-    "Due Date": "تاريخ الاستحقاق",
+    "Cash Clear": "تحصيل نقدي",
+    "Re-deposit": "إعادة إيداع",
+    "Bounce Reason": "سبب الارتجاع",
+    "Insufficient Funds": "عدم كفاية الرصيد",
+    "Cheque Tracker Settings": "إعدادات متابعة الشيكات",
 }
 
 
@@ -68,14 +74,44 @@ class TestArabicTranslations(FrappeTestCase):
         for source, expected in ANCHORS.items():
             self.assertEqual(translations.get(source), expected, f"wrong Arabic for {source!r}")
 
+    def test_no_entry_shadows_frappe_or_erpnext(self):
+        """The rule: cheque_tracker translates only what core does not.
+
+        Frappe's translation namespace is flat, so an entry here rewrites that
+        string for every app on the site.
+        """
+        from cheque_tracker.tests import verify_translations
+
+        collisions = verify_translations.find_collisions(LANG)
+        self.assertIsNotNone(
+            collisions, "no core Arabic catalogue found - cannot verify shadowing"
+        )
+        self.assertEqual(
+            collisions, [], f"these entries shadow frappe/erpnext core: {collisions}"
+        )
+
+    def _covered(self):
+        """Sources that have Arabic from SOMEWHERE — ours or core's.
+
+        The completeness checks below exist to catch a new status or action
+        shipping with no Arabic at all. Since the app deliberately no longer
+        translates strings core already covers, "covered" has to mean the union;
+        asserting only against our csv would fail for every string we correctly
+        left to core.
+        """
+        from cheque_tracker.tests import verify_translations
+
+        ours = set(get_translations_from_csv(LANG, APP) or {})
+        return ours | verify_translations.core_source_strings(LANG)
+
     def test_every_cheque_status_is_translated(self):
-        translations = get_translations_from_csv(LANG, APP)
+        covered = self._covered()
         statuses = frappe.get_meta("Cheque").get_field("status").options.split("\n")
-        missing = [s for s in statuses if s.strip() and not translations.get(s.strip())]
-        self.assertEqual(missing, [], "cheque statuses with no Arabic")
+        missing = [s.strip() for s in statuses if s.strip() and s.strip() not in covered]
+        self.assertEqual(missing, [], "cheque statuses with no Arabic anywhere")
 
     def test_every_workflow_action_is_translated(self):
-        translations = get_translations_from_csv(LANG, APP)
+        covered = self._covered()
         actions = frappe.get_all("Workflow Action Master", pluck="name")
         # Only the actions this app ships; other apps own their own vocabulary.
         ours = {
@@ -83,14 +119,14 @@ class TestArabicTranslations(FrappeTestCase):
             "Hand Over", "Present", "Clear", "Bounce", "Re-deposit", "Return",
             "Replace", "Cancel Cheque",
         }
-        missing = [a for a in ours.intersection(actions) if not translations.get(a)]
-        self.assertEqual(missing, [], "workflow actions with no Arabic")
+        missing = sorted(a for a in ours.intersection(actions) if a not in covered)
+        self.assertEqual(missing, [], "workflow actions with no Arabic anywhere")
 
     def test_every_bounce_reason_is_translated(self):
-        translations = get_translations_from_csv(LANG, APP)
+        covered = self._covered()
         reasons = frappe.get_meta("Cheque").get_field("bounce_reason").options.split("\n")
-        missing = [r for r in reasons if r.strip() and not translations.get(r.strip())]
-        self.assertEqual(missing, [], "bounce reasons with no Arabic")
+        missing = [r.strip() for r in reasons if r.strip() and r.strip() not in covered]
+        self.assertEqual(missing, [], "bounce reasons with no Arabic anywhere")
 
     def test_entries_reach_the_merged_runtime_dictionary(self):
         # get_translations_from_csv reads the file directly; this proves the same
