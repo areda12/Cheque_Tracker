@@ -92,14 +92,11 @@ def _get_or_create_test_bank():
 
 
 def _env():
-    companies = frappe.get_all("Company", limit=1)
-    if not companies:
-        return None, None, None
-    company  = companies[0].name
-    customers = frappe.get_all("Customer", limit=1)
-    customer  = customers[0].name if customers else None
-    currency  = frappe.db.get_value("Company", company, "default_currency") or "USD"
-    return company, customer, currency
+    """Pinned test environment — see cheque_tracker/tests/utils.py."""
+    from cheque_tracker.tests.utils import get_test_env
+
+    env = get_test_env()
+    return env["company"], env["customer"], env["currency"]
 
 
 def _make_incoming_cheque(company, customer, currency, pdc_account=None):
