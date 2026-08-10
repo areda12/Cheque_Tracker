@@ -362,8 +362,8 @@ and 3 shortcuts.
 ### Final gate — run twice consecutively
 
 ```
-migrate1 exit=0  workspace deleted: 0  verify_fixtures OK  suite 189 OK (1 skip)
-migrate2 exit=0  workspace deleted: 0  verify_fixtures OK  suite 189 OK (1 skip)
+migrate1 exit=0  workspace deleted: 0  verify_fixtures OK  verify_translations OK  suite 197 OK (1 skip)
+migrate2 exit=0  workspace deleted: 0  verify_fixtures OK  verify_translations OK  suite 197 OK (1 skip)
 scenario matrix: 11/11 passed
 ```
 
@@ -373,8 +373,8 @@ scenario matrix: 11/11 passed
 |---|---|---|---|---|
 | Baseline (`origin/main`) | 34 | 0 | 16 | 12 |
 | v1.1.6 | 63 | 0 | 0 | 0 |
-| v1.2.0 | 110 | 0 | 0 | 0 |
-| **v1.3.0** | **189** | **0** | **0** | **1** |
+| v1.2.0 | 118 | 0 | 0 | 0 |
+| **v1.3.0** | **197** | **0** | **0** | **1** |
 
 The single skip is `test_all_three_produce_a_pdf`: `wkhtmltopdf` is not installed
 on this bench, so it self-skips rather than failing. The HTML assertions are the
@@ -394,8 +394,11 @@ currency). Changing any agreement rule turns those red.
    a DNS timeout per render. Ship the font with the app if EEI wants it exactly.
 2. **`wkhtmltopdf` is absent on this bench**, so PDF generation itself is proven
    only at the HTML level. Worth one manual print on eei-test.
-3. **Two Arabic entries override ERPNext's own** (`Issue`, `Clear`) — D10, still
-   open for Ahmed's decision.
+3. **The app no longer shadows any core translation** (D10, amended in PR 2), so
+   a few poor core Arabic strings render as core has them. Report column labels
+   that collide with core (`Company`, `Customer`, `Month`, `Status`, `Type`, …)
+   are deliberately left to core; the app-unique ones (`Cheque Maturity Ladder`,
+   `Cumulative Net`, `In Custody Since`, `Bounce %`, …) are translated here.
 4. `auto_update_cheque_statuses` still logs only overdue *Deposited* cheques —
    pre-existing, superseded in practice by the §4.6 digest.
 
