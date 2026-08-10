@@ -127,7 +127,7 @@
    "hidden": 0,
    "onboard": 0,
    "is_query_report": 0,
-   "link_count": 4,
+   "link_count": 7,
    "doctype": "Workspace Link"
   },
   {
@@ -173,6 +173,36 @@
    "is_query_report": 1,
    "link_count": 0,
    "doctype": "Workspace Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Cheque Maturity Ladder",
+   "link_count": 0,
+   "link_to": "Cheque Maturity Ladder",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Cheques in Custody",
+   "link_count": 0,
+   "link_to": "Cheques in Custody",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Bounce Rate by Customer",
+   "link_count": 0,
+   "link_to": "Bounce Rate by Customer",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
   }
  ],
  "number_cards": [

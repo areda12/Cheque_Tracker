@@ -1,5 +1,80 @@
 # CHANGELOG
 
+## v1.3.0 — Print formats, batch cascade, reports, workspace (2026-08-10)
+
+Ops-polish release. No accounting behaviour changes; additive except where noted.
+
+### Print formats (§5.1)
+
+Three bilingual (Arabic / English) Jinja formats, styled on EEI's approved
+documents — same navy/cyan tokens, titlebar, doc-number box, info grid, navy
+table header and signature blocks:
+
+- **Cheque Receipt Voucher — إيصال استلام شيك** (Cheque, A5): serial, date,
+  received-from party, cheque no / bank / branch, due date, linked Payment Entry,
+  amount in figures **and in Arabic words**, receiver signature block.
+- **Custody Handover — محضر تسليم شيك** (Cheque, A5): from/to (internal holder or
+  `external_holder`), cheque particulars, two signature blocks.
+- **Deposit Slip — قسيمة إيداع** (Cheque Batch, A4): bank and account header,
+  member cheque table (no / drawer / bank / due date / amount), count and totals.
+
+All three ship as standard app files, so `bench migrate` installs them and an
+admin's edits are not overwritten by a fixture re-import.
+
+**Amount in Arabic words** needed its own implementation: `money_in_words` has no
+Arabic support and Egypt's seeded Currency fraction is literally `"Piastre[F]"`.
+`arabic_words.py` renders classical تمييز agreement — `جنيه واحد` / `جنيهان` /
+`ثلاثة جنيهات` / `أحد عشر جنيهاً`, construct-state forms before the counted noun
+(`ألفا جنيه`, `مائتا جنيه`), scale words with their own agreement, and the واو
+before the final term. It is dependency-free and never raises; if the Jinja hook
+is missing the formats print the figure instead of failing.
+
+### Cheque Batch cascade (§5.2)
+
+Deposit, Clear **and Bounce** now cascade to member cheques, and every one goes
+through `change_cheque_status` — the same endpoint a single cheque uses. The old
+code transitioned members by hand, which bypassed the per-cheque Cheque Event,
+the role gating and preconditions, and (since v1.2) the Payment Entry settlement.
+Clearing a batch now settles each member's PE exactly as clearing them one at a
+time would, and the batch itself still posts nothing.
+
+Member validation: incoming only, submitted, in a depositable state, same
+company, not set to clear in cash, and not already claimed by another open batch.
+Item snapshots refresh on every save — they are what the Deposit Slip prints.
+
+### Reports (§5.3)
+
+- **Cheque Maturity Ladder** — monthly buckets over `due_date`: incoming,
+  outgoing, net and a cumulative running total, with a chart. Excludes Cancelled,
+  Replaced and Returned; a replaced cheque's flow is already counted by its
+  replacement.
+- **Cheques in Custody** — active cheques by holder (internal user or
+  `external_holder`) with age in custody.
+- **Bounce Rate by Customer** — cheques, bounced count, bounce %, bounced value
+  and a reason breakdown. Counting is event-based: a cheque that bounced and was
+  later cleared still bounced.
+
+### Workspace and Quick Entry (§5.4)
+
+The Workspace and Desktop Icon were **deleted on every single migrate** by core's
+`remove_orphan_entities()`, with an `after_migrate` hook re-inserting them. The
+hook was load-bearing, not belt-and-braces. Core looks for a file backing each
+record — `<app_path>/**/workspace/**/*.json` and
+`<app_path>/desktop_icon/<name>.json` — and the app had no `workspace/` directory
+and an empty `desktop_icon/` one. Both now ship as standard files where core
+expects them, the `after_migrate` band-aid is gone, and an admin's Workspace
+layout edits survive a migrate for the first time.
+
+The Reports card gained the three new reports. Quick Entry is enabled on Cheque
+with the mandatory fields plus drawee bank, drawer name, received date and the
+scan attachment, so a clerk can log a cheque from a phone.
+
+### Other
+
+- `log_status_change` no longer overwrites an existing `cleared_date` with
+  today's — the batch cascade passes the bank's date.
+- `translations/ar.csv` grew to 266 entries, covering the new report columns.
+
 ## v1.2.0 — State model + accounting integration (2026-08-10)
 
 Feature release. Adds a schema migration and changes where the general ledger

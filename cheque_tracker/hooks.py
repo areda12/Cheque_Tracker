@@ -71,6 +71,9 @@ fixtures = [
                     "Deposited Not Cleared",
                     "Bounced Cheques Register",
                     "Cheque Book Utilization",
+                    "Cheque Maturity Ladder",
+                    "Cheques in Custody",
+                    "Bounce Rate by Customer",
                 ],
             ]
         ],
@@ -146,6 +149,15 @@ before_tests = "cheque_tracker.tests.utils.before_tests"
 # Jinja
 # ------------------------------------------------------------------
 jinja = {
-    "methods": [],
+    "methods": [
+        # Amount in Arabic words for the §5.1 print formats. frappe's
+        # money_in_words has no Arabic support and Egypt's seeded Currency
+        # fraction is literally "Piastre[F]", so the app carries its own.
+        #
+        # This must be the FUNCTION path, not the module path: get_jinja_hooks()
+        # copies every function of a hooked module into the Jinja globals under
+        # its own bare name, which would publish the private helpers too.
+        "cheque_tracker.cheque_tracker.doctype.cheque.arabic_words.cheque_amount_in_arabic_words",
+    ],
     "filters": [],
 }

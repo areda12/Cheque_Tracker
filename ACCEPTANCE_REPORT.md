@@ -312,3 +312,100 @@ a time, each reverted:
   `notify_emails` in Cheque Tracker Settings to turn the daily digest on; with
   `notify_emails` blank the digest simply does not send.
 - **Review before deploying:** the GL change in D2. Everything else is additive.
+
+---
+
+## Phase 3 — v1.3.0 (ops polish)
+
+**Branch:** `v1.3.0-ops-polish` (PR 3, stacked on PR 2)
+**Date:** 2026-08-10
+**Result:** all §5.5 acceptance criteria pass.
+
+### §5.5 acceptance criteria
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| PDF render smoke for all three formats via `frappe.get_print` — no Jinja errors | **PASS** | `TestPrintFormatRendering` (9 tests) |
+| Arabic text present in the rendered output | **PASS** | asserted per format; live check below |
+| Totals correct, asserted on the generated HTML | **PASS** | Deposit Slip count + sum asserted against the batch |
+| Batch cascade incl. events-per-member | **PASS** | `TestBatchCascade` — one event per member, per action |
+| Invalid-member rejection | **PASS** | `TestBatchMemberValidation` (6 tests) |
+| Each report via `frappe.desk.query_report.run` with seeded data | **PASS** | `tests/test_reports.py` (31 tests) |
+| Report row math asserted (ladder sums, bounce %) | **PASS** | ladder buckets re-derived from `tabCheque`; cumulative column re-accumulated row by row; bounce % checked against a known set |
+| Final: full suite + `bench migrate` ×2 + fixture assertions | **PASS** | below |
+
+### Live render check
+
+```
+frappe.get_print("Cheque", <20,119 EGP incoming>, print_format="Cheque Receipt Voucher")
+→ فقط: عشرون ألفاً ومائة وتسعة عشر جنيهاً لا غير.
+```
+
+That is the exact amount of production CHQ-2026-00001, rendered with correct
+تمييز agreement and the traditional فقط … لا غير bracketing.
+
+### Workspace no longer reverts (§5.4)
+
+The regression that made `after_migrate` load-bearing:
+
+```
+== migrate 1 ==   workspace deleted count: 0
+== migrate 2 ==   workspace deleted count: 0
+```
+
+Before this release, each of those migrations printed
+`Deleting entity Workspace Cheque Tracker` and the record only existed afterwards
+because the `after_migrate` hook re-inserted it. The hook is now gone, and the
+Workspace survives with all 11 number cards, 2 charts, 13 links (7 under Reports)
+and 3 shortcuts.
+
+### Final gate — run twice consecutively
+
+```
+migrate1 exit=0  workspace deleted: 0  verify_fixtures OK  suite 189 OK (1 skip)
+migrate2 exit=0  workspace deleted: 0  verify_fixtures OK  suite 189 OK (1 skip)
+scenario matrix: 11/11 passed
+```
+
+### Test suite
+
+| Release | Tests | Failures | Errors | Skipped |
+|---|---|---|---|---|
+| Baseline (`origin/main`) | 34 | 0 | 16 | 12 |
+| v1.1.6 | 63 | 0 | 0 | 0 |
+| v1.2.0 | 110 | 0 | 0 | 0 |
+| **v1.3.0** | **189** | **0** | **0** | **1** |
+
+The single skip is `test_all_three_produce_a_pdf`: `wkhtmltopdf` is not installed
+on this bench, so it self-skips rather than failing. The HTML assertions are the
+load-bearing ones and they run.
+
+### Sensitivity check
+
+The Arabic tafqeet helper is the newest and least conventional code, so it
+carries a 22-case agreement table plus boundary cases (0, 1, 2, 11, 100, 1000,
+2000, 999,999,999.99, values with piastres, negatives, junk input, unsupported
+currency). Changing any agreement rule turns those red.
+
+### Deviations and known limitations
+
+1. **The Cairo web font is not embedded** — D12. PDF rendering has no outbound
+   network, so the `@import` in the design reference would fail silently and cost
+   a DNS timeout per render. Ship the font with the app if EEI wants it exactly.
+2. **`wkhtmltopdf` is absent on this bench**, so PDF generation itself is proven
+   only at the HTML level. Worth one manual print on eei-test.
+3. **Two Arabic entries override ERPNext's own** (`Issue`, `Clear`) — D10, still
+   open for Ahmed's decision.
+4. `auto_update_cheque_statuses` still logs only overdue *Deposited* cheques —
+   pre-existing, superseded in practice by the §4.6 digest.
+
+### Migration notes (v1.3.0)
+
+- Patches that run: **none.** This release adds no patch.
+- What changes on migrate: three Print Formats, three Reports and the Workspace /
+  Desktop Icon / Workspace Sidebar are installed from standard app files. The
+  `after_migrate` hook is removed.
+- Expected duration: normal migrate time; no data is rewritten.
+- Manual steps required post-deploy: **none.**
+- Worth eyeballing once on eei-test: print one of each of the three formats, and
+  confirm the Workspace still shows its cards after a second migrate.
