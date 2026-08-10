@@ -126,6 +126,55 @@ def validate_clearance_has_accounting_document(cheque):
     )
 
 
+# Reference fields are editable after submit (v1.3.1) so an accountant can
+# attach the Payment Entry to a cheque that was submitted before the PE existed —
+# which the clearance gate now requires. Production was bridging this with two
+# Property Setters; those can be deleted once this ships.
+REFERENCE_FIELDS = ("reference_doctype", "reference_name")
+
+
+def validate_reference_edit_after_submit(cheque):
+    """Attaching a missing reference is fine; silently repointing one is not.
+
+    Once a cheque is submitted its accounting reference is part of the audit
+    trail: changing it moves the money to a different document after the fact.
+    So after submit the fields may be FILLED IN when empty, but only a System
+    Manager may change or clear one that is already set.
+    """
+    if cheque.docstatus != 1:
+        return
+
+    before = cheque.get_doc_before_save()
+    if not before:
+        return
+
+    changed = [f for f in REFERENCE_FIELDS if (before.get(f) or None) != (cheque.get(f) or None)]
+    if not changed:
+        return
+
+    # Filling in a blank is the whole point of allowing the edit.
+    overwriting = [f for f in changed if before.get(f)]
+    if not overwriting:
+        return
+
+    if CLEARANCE_OVERRIDE_ROLE in frappe.get_roles(frappe.session.user):
+        return
+
+    frappe.throw(
+        _(
+            "{0} is already set to {1} on this submitted cheque. Only a {2} can "
+            "change an accounting reference after submission — attach the missing "
+            "one instead, or ask a {2} if it really must be repointed."
+        ).format(
+            _(frappe.get_meta("Cheque").get_label(overwriting[0])),
+            before.get(overwriting[0]),
+            CLEARANCE_OVERRIDE_ROLE,
+        ),
+        frappe.PermissionError,
+        title=_("Reference already set"),
+    )
+
+
 def validate_payment_entry_link(cheque):
     """§4.5.3 — sanity-check a Cheque against the Payment Entry it points at.
 

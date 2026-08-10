@@ -11,10 +11,21 @@
   document a teller reads line by line — worth it, since a deposit slip without
   the drawing bank is not acceptable at a counter.
 
-  The Cairo web-font pulled in by the approved formats is dropped on purpose:
-  PDF rendering has no network. The font stack is unchanged.
+Cairo is bundled with the app (public/fonts) and loaded from a
+  site-relative @font-face, so the approved typeface survives PDF rendering.
 -#}
 <style>
+/* Cairo ships with the app rather than being pulled from a hosted font service.
+   Frappe Cloud's wkhtmltopdf has no external egress, so a remote stylesheet
+   reference silently fails and the whole document falls back to a Latin face --
+   Arabic then renders in whatever the substitution picks. Assets served by the
+   site itself DO load, which the letterhead image proves.
+   TrueType specifically: wkhtmltopdf embeds QtWebKit, which cannot read the
+   modern compressed web-font formats. */
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-Regular.ttf') format('truetype'); font-weight:400; font-style:normal; }
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-SemiBold.ttf') format('truetype'); font-weight:600; font-style:normal; }
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-Bold.ttf') format('truetype'); font-weight:700; font-style:normal; }
+
 /* frappe.utils.pdf.read_options_from_html lifts these off the bare
    `.print-format` selector into wkhtmltopdf options — the v16 Print Format
    doctype has no page_size field. */

@@ -7,9 +7,10 @@
   formats are table-based on purpose so the desk print view and the PDF engine
   agree, and this one keeps that.
 
-  The Cairo web-font pulled in by the approved formats is deliberately dropped:
-  PDF rendering runs with no network, and a blocked font request is a stalled
-  voucher. The font stack is unchanged, so Cairo is still used where installed.
+  Cairo ships with the app (public/fonts) and loads from a site-relative
+  @font-face, so the approved typeface survives PDF rendering. It used to be
+  omitted entirely: the reference formats fetch it from a hosted service, and
+  PDF rendering has no external egress, so the request would simply stall.
 
   Amount in words comes from the app's Arabic tafqeet helper, which reaches Jinja
   only through the `jinja.methods` hook. Until that hook entry exists the global
@@ -17,6 +18,17 @@
   figure — a receipt that prints without words is recoverable, a 500 is not.
 -#}
 <style>
+/* Cairo ships with the app rather than being pulled from a hosted font service.
+   Frappe Cloud's wkhtmltopdf has no external egress, so a remote stylesheet
+   reference silently fails and the whole document falls back to a Latin face --
+   Arabic then renders in whatever the substitution picks. Assets served by the
+   site itself DO load, which the letterhead image proves.
+   TrueType specifically: wkhtmltopdf embeds QtWebKit, which cannot read the
+   modern compressed web-font formats. */
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-Regular.ttf') format('truetype'); font-weight:400; font-style:normal; }
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-SemiBold.ttf') format('truetype'); font-weight:600; font-style:normal; }
+@font-face { font-family:'Cairo'; src:url('/assets/cheque_tracker/fonts/Cairo-Bold.ttf') format('truetype'); font-weight:700; font-style:normal; }
+
 /* Page geometry. frappe.utils.pdf.read_options_from_html lifts properties off
    the bare `.print-format` selector into wkhtmltopdf options, so this is how a
    standard print format asks for A5 — the Print Format doctype has no
@@ -41,7 +53,7 @@
 .dnf .f-val { font-weight:600; font-size:12.5px; }
 .dnf .ltr { direction:ltr; unicode-bidi:embed; }
 .dnf .totals td { padding:5px 10px; font-size:12.5px; }
-.dnf .totals .t-lbl { text-align:left; color:#555; }
+.dnf .totals .t-lbl { text-align:left; color:#555; white-space:nowrap; }
 .dnf .totals .t-val { text-align:left; direction:ltr; font-weight:600; width:34%; }
 .dnf .totals tr.grand td { border-top:2px solid #2F2E78; font-weight:700; font-size:15px; color:#2F2E78; }
 .dnf .words { font-size:11.5px; color:#555; margin-top:4px; }
@@ -142,7 +154,7 @@
 
   <table class="totals">
     <tr class="grand">
-      <td style="width:46%; border:none;"></td>
+      <td style="width:30%; border:none;"></td>
       <td class="t-lbl">قيمة الشيك — Cheque Amount</td>
       <td class="t-val">{{ frappe.utils.fmt_money(doc.amount, 2, doc.currency) }}</td>
     </tr>
