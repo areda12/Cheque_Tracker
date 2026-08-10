@@ -223,3 +223,41 @@ Frappe location — with both scheduled jobs registered under
 `cheque_tracker.tasks.*` and the duplicate removed. Both paths verified to
 resolve through `frappe.get_attr`, the same call `ScheduledJobType.execute`
 makes.
+
+---
+
+## D12 — The Cairo web font is not embedded in the print formats
+
+`EEI_PRINT_DESIGN_REFERENCE` §1 keeps a Google-Fonts `@import` for Cairo. The
+print formats drop it: PDF rendering happens server-side with no outbound
+network, so the import silently fails and costs a DNS timeout on every render.
+The formats fall back through a local Arabic stack instead. If EEI wants Cairo
+specifically, the fix is to ship the font file with the app and `@font-face` it
+from `/assets/`, not to fetch it at render time.
+
+---
+
+## D13 — What the maturity ladder counts, and what "bounced" means
+
+Three judgment calls inside the new reports, each also documented where it lives:
+
+- **The ladder excludes Cancelled, Replaced and Returned cheques.** A replaced
+  cheque's cash flow is already represented by its replacement; counting both
+  would double that month's expected inflow.
+- **Bounce counting is event-based ("ever bounced"), not status-based.** A cheque
+  that bounced and was later cleared still bounced — a status-based count would
+  quietly forgive it and understate a customer's true rate.
+- **Bounce rate covers Incoming cheques with `party_type = Customer` only.** An
+  outgoing cheque of ours that bounced is our failure, not the customer's, and
+  mixing the two would make the report unusable for its purpose.
+
+---
+
+## D14 — Batch members inherit the batch's bank account
+
+Routing the cascade through `change_cheque_status` (§5.2) means each member must
+satisfy the same preconditions a single deposit does, including having a bank
+account. Members without one now inherit the batch's, because depositing *is*
+naming the account the cheque goes into. The alternative — failing each member
+with "Bank Account is required" — would be a confusing way to say "this batch has
+no bank account".

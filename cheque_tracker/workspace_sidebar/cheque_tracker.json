@@ -1,0 +1,126 @@
+{
+ "name": "Cheque Tracker",
+ "doctype": "Workspace Sidebar",
+ "items": [
+  {
+   "label": "Home",
+   "type": "Link",
+   "link_type": "Workspace",
+   "link_to": "Cheque Tracker",
+   "icon": "home",
+   "child": 0,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque",
+   "type": "Link",
+   "link_type": "DocType",
+   "link_to": "Cheque",
+   "icon": "receipt-text",
+   "child": 0,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque Batch",
+   "type": "Link",
+   "link_type": "DocType",
+   "link_to": "Cheque Batch",
+   "icon": "package",
+   "child": 0,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque Books",
+   "type": "Section Break",
+   "link_type": "DocType",
+   "icon": "book-open-text",
+   "child": 0,
+   "indent": 1,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque Book",
+   "type": "Link",
+   "link_type": "DocType",
+   "link_to": "Cheque Book",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque Leaf",
+   "type": "Link",
+   "link_type": "DocType",
+   "link_to": "Cheque Leaf",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Reports",
+   "type": "Section Break",
+   "link_type": "DocType",
+   "icon": "chart",
+   "child": 0,
+   "indent": 1,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheque Book Utilization",
+   "type": "Link",
+   "link_type": "Report",
+   "link_to": "Cheque Book Utilization",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Deposited Not Cleared",
+   "type": "Link",
+   "link_type": "Report",
+   "link_to": "Deposited Not Cleared",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Bounced Cheques Register",
+   "type": "Link",
+   "link_type": "Report",
+   "link_to": "Bounced Cheques Register",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Cheques Due This Week",
+   "type": "Link",
+   "link_type": "Report",
+   "link_to": "Cheques Due This Week",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Setup",
+   "type": "Section Break",
+   "link_type": "DocType",
+   "icon": "database",
+   "child": 0,
+   "indent": 1,
+   "doctype": "Workspace Sidebar Item"
+  },
+  {
+   "label": "Settings",
+   "type": "Link",
+   "link_type": "DocType",
+   "link_to": "Cheque Tracker Settings",
+   "child": 1,
+   "indent": 0,
+   "doctype": "Workspace Sidebar Item"
+  }
+ ]
+}

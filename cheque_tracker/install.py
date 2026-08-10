@@ -73,43 +73,20 @@ def _bootstrap_settings():
     )
 
 
-def ensure_ui_fixtures():
-    """
-    Idempotently re-apply UI fixture files that Frappe's standard import
-    path consistently silently skips during `bench migrate`.
 
-    Wired in hooks.py via `after_migrate = "cheque_tracker.install.ensure_ui_fixtures"`.
-
-    Observed during PR #12 deploys on Frappe Cloud: workspace.json,
-    workspace_sidebar.json, and desktop_icon.json are all valid, on disk,
-    and registered in hooks.py fixtures, but the records did not
-    materialize in DB after migrate. Manually invoking import_doc on the
-    same files works correctly every time.
-
-    This hook re-applies these fixture files via import_doc on every
-    migrate as belt-and-suspenders. import_doc is idempotent — it inserts
-    if the record doesn't exist, updates if it does. Failures on
-    individual files are swallowed and logged rather than raised, so a UI
-    fixture issue never blocks a migrate.
-    """
-    fixtures_dir = os.path.join(frappe.get_app_path("cheque_tracker"), "fixtures")
-
-    ui_fixture_files = [
-        "workspace.json",
-        "workspace_sidebar.json",
-        "desktop_icon.json",
-    ]
-
-    from frappe.core.doctype.data_import.data_import import import_doc
-
-    for filename in ui_fixture_files:
-        fixture_path = os.path.join(fixtures_dir, filename)
-        if not os.path.exists(fixture_path):
-            continue
-        try:
-            import_doc(fixture_path)
-            frappe.db.commit()
-        except Exception:
-            frappe.log_error(
-                title=f"Cheque Tracker: {filename} re-import failed",
-            )
+# ------------------------------------------------------------------
+# ensure_ui_fixtures() lived here until v1.3.
+#
+# It re-imported workspace.json / workspace_sidebar.json / desktop_icon.json
+# after every migrate, because `remove_orphan_entities()` deleted the Workspace
+# and Desktop Icon on every migrate. Its docstring blamed Frappe for "silently
+# skipping" the files, which was never the cause: core force-imports every
+# fixture. The records were deleted because `create_entity_file_map()` globs
+# `<app_path>/**/workspace/**/*.json` and the app had no `workspace/` directory,
+# and `check_if_record_exists()` looks for `<app_path>/desktop_icon/<name>.json`
+# and that directory was empty (frappe/model/sync.py:271-312).
+#
+# All three records now ship as standard files where core expects them, so
+# nothing is orphaned and the after_migrate hook is gone. Deleting the band-aid
+# also restores something it was quietly destroying: an admin's edits to the
+# Workspace layout, which it overwrote on every single migrate.

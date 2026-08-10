@@ -1,0 +1,203 @@
+{#-
+  محضر تسليم شيك — Cheque Custody Handover (Cheque). A5.
+
+  Clone of EEI's approved Delivery Note format (EEI_PRINT_DESIGN_REFERENCE §4):
+  same tokens and table-based layout, its acknowledgment line, and its signature
+  block pattern reduced from three boxes to two per §2 of the reference.
+
+  Recipient resolution, in order: `current_holder` (a Link to User — the live
+  internal custodian), then `external_holder` / the endorsement counterparty.
+  The Cheque Event trail is deliberately NOT consulted for the recipient:
+  `_append_event` stamps `to_holder` from `current_holder` as it stands when the
+  row is written, so on an external hand-over the event still carries the
+  employee who was about to be released. Reading it would name the wrong person
+  on a custody record. The trail IS used for the giver, where `from_holder` is
+  written explicitly and is the only record of who let the cheque go.
+
+  The Cairo web-font pulled in by the approved formats is dropped on purpose:
+  PDF rendering has no network. The font stack is unchanged.
+-#}
+<style>
+/* frappe.utils.pdf.read_options_from_html lifts these off the bare
+   `.print-format` selector into wkhtmltopdf options — the v16 Print Format
+   doctype has no page_size field. */
+.print-format { page-size: A5; margin-top: 10mm; margin-bottom: 10mm; margin-left: 10mm; margin-right: 10mm; }
+
+.dnf { direction: rtl; font-family: 'Cairo','Segoe UI',Tahoma,sans-serif; color:#1a1a1a; font-size:12.5px; line-height:1.5; }
+.dnf table { width:100%; border-collapse:collapse; }
+.dnf .lh { text-align:center; margin-bottom:6px; }
+.dnf .lh img { max-width:100%; }
+.dnf .lh-rule { border-top:3px solid #2F2E78; border-bottom:1px solid #28ABE2; height:2px; margin:0 0 12px 0; }
+.dnf .titlebar { margin:2px 0 10px 0; }
+.dnf .doc-title { font-size:22px; font-weight:700; margin:0; line-height:1.1; color:#2F2E78; }
+.dnf .doc-sub { color:#28ABE2; font-size:10px; letter-spacing:2px; text-transform:uppercase; font-weight:600; }
+.dnf .docno-box { border:1.5px solid #2F2E78; border-radius:6px; padding:5px 16px; text-align:center; display:inline-block; }
+.dnf .docno-box .b-lbl { font-size:10px; color:#777; }
+.dnf .docno-box .b-val { font-size:13px; font-weight:700; direction:ltr; color:#2F2E78; }
+.dnf .info { border:1px solid #cfcfcf; border-radius:6px; margin-bottom:10px; }
+.dnf .info td { padding:4px 12px; border-bottom:1px solid #ececec; width:50%; vertical-align:top; }
+.dnf .info tr:last-child td { border-bottom:none; }
+.dnf .f-lbl { color:#666; font-size:10px; display:block; }
+.dnf .f-val { font-weight:600; font-size:12.5px; }
+.dnf .ltr { direction:ltr; unicode-bidi:embed; }
+.dnf .items th { background:#2F2E78; color:#ffffff; padding:6px 8px; font-size:11.5px; font-weight:600; text-align:right; }
+.dnf .items th.c, .dnf .items td.c { text-align:center; }
+.dnf .items td { padding:6px 8px; border-bottom:1px solid #e0e0e0; font-size:12px; vertical-align:top; }
+.dnf .items tbody tr:nth-child(even) td { background:#f6f8fc; }
+.dnf .items .total-row td { border-top:2px solid #2F2E78; border-bottom:none; font-weight:700; font-size:12.5px; background:#ffffff; color:#2F2E78; }
+.dnf .words { font-size:11.5px; color:#555; margin-top:4px; }
+.dnf .fbox { border:1px dashed #28ABE2; background:#f5fbff; border-radius:6px; padding:6px 12px; margin-top:10px; font-size:11px; }
+.dnf .fbox .f-t { font-weight:700; color:#2F2E78; }
+.dnf .notes { border:1px dashed #bbbbbb; border-radius:6px; padding:6px 12px; margin-top:8px; font-size:11px; }
+.dnf .ack { margin-top:12px; font-size:11px; color:#444; }
+.dnf .sigs { margin-top:8px; }
+.dnf .sigs td.sig-box { width:48%; border:1px solid #cfcfcf; border-radius:6px; padding:8px 12px 6px 12px; vertical-align:top; }
+.dnf .sig-title { font-weight:700; font-size:12px; margin-bottom:12px; text-align:center; color:#2F2E78; }
+.dnf .sig-line { color:#555; font-size:10.5px; margin-top:12px; border-bottom:1px dotted #999; padding-bottom:2px; }
+.dnf td.spacer { width:4%; border:none; padding:0; }
+</style>
+
+<div class="dnf">
+
+  {%- if letter_head and not no_letterhead -%}
+  <div class="lh">{{ letter_head }}</div>
+  <div class="lh-rule"></div>
+  {%- endif -%}
+
+  <table class="titlebar">
+    <tr>
+      <td style="width:60%;">
+        <h1 class="doc-title">محضر تسليم شيك</h1>
+        <div class="doc-sub">CHEQUE CUSTODY HANDOVER</div>
+      </td>
+      <td style="width:40%; text-align:left; vertical-align:middle;">
+        <div class="docno-box">
+          <div class="b-lbl">رقم المحضر — Record No</div>
+          <div class="b-val">{{ doc.name }}</div>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  {%- set handovers = doc.events | selectattr("event_type", "equalto", "Handed Over") | list -%}
+  {%- set last_handover = handovers[-1] if handovers else None -%}
+  {%- set released = doc.events | selectattr("from_holder") | list -%}
+  {%- set from_user = released[-1].from_holder if released else None -%}
+  {%- set external_party = doc.external_holder or doc.endorsed_to_other_name or doc.endorsed_to_party -%}
+  {%- set to_user = doc.current_holder -%}
+  {%- set from_party = frappe.get_fullname(from_user) if from_user else (doc.company or '—') -%}
+  {%- set to_party = frappe.get_fullname(to_user) if to_user else (external_party or '—') -%}
+  {%- set to_kind = 'موظف — Internal' if to_user else ('جهة خارجية — External' if external_party else '—') -%}
+  {%- set handover_date = (last_handover.event_datetime if last_handover and last_handover.event_datetime else doc.endorsement_date or doc.issue_date or doc.received_date) -%}
+
+  <table class="info">
+    <tr>
+      <td>
+        <span class="f-lbl">المُسلِّم — Handed Over By</span>
+        <span class="f-val">{{ from_party or '—' }}</span>
+      </td>
+      <td>
+        <span class="f-lbl">تاريخ التسليم — Handover Date</span>
+        <span class="f-val ltr">{{ frappe.utils.formatdate(handover_date, "dd/MM/yyyy") if handover_date else '—' }}</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <span class="f-lbl">المُستلِم — Handed Over To</span>
+        <span class="f-val">{{ to_party or '—' }}</span>
+      </td>
+      <td>
+        <span class="f-lbl">صفة المُستلِم — Recipient Type</span>
+        <span class="f-val">{{ to_kind }}</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <span class="f-lbl">مكان العهدة — Custody Location</span>
+        <span class="f-val">{{ doc.custody_location or (last_handover.location if last_handover and last_handover.location else None) or '—' }}</span>
+      </td>
+      <td>
+        <span class="f-lbl">حالة الشيك — Cheque Status</span>
+        <span class="f-val">{{ doc.status or '—' }}</span>
+      </td>
+    </tr>
+  </table>
+
+  <table class="items">
+    <thead>
+      <tr>
+        <th style="width:26%;">البيان — Particular</th>
+        <th style="width:24%;">القيمة — Value</th>
+        <th style="width:26%;">البيان — Particular</th>
+        <th style="width:24%;">القيمة — Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>رقم الشيك — Cheque No</td>
+        <td class="ltr" style="text-align:right;">{{ doc.cheque_no or '—' }}</td>
+        <td>نوع الشيك — Cheque Type</td>
+        <td>{{ 'وارد — Incoming' if doc.cheque_type == 'Incoming' else 'صادر — Outgoing' }}</td>
+      </tr>
+      <tr>
+        <td>البنك المسحوب عليه — Drawee Bank</td>
+        <td>{{ doc.drawee_bank or '—' }}</td>
+        <td>اسم الساحب — Drawer Name</td>
+        <td>{{ doc.drawer_name or doc.party or '—' }}</td>
+      </tr>
+      <tr>
+        <td>الطرف — Party</td>
+        <td>{{ doc.party or '—' }}</td>
+        <td>تاريخ الاستحقاق — Due Date</td>
+        <td class="ltr" style="text-align:right;">{{ frappe.utils.formatdate(doc.due_date, "dd/MM/yyyy") if doc.due_date else '—' }}</td>
+      </tr>
+      <tr class="total-row">
+        <td colspan="2">المبلغ — Amount</td>
+        <td colspan="2" class="ltr" style="text-align:right;">{{ frappe.utils.fmt_money(doc.amount, 2, doc.currency) }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  {#- Guarded: `cheque_amount_in_arabic_words` is a jinja.methods global; when
+      the hook is not registered the name is undefined and the figure stands in.
+      A handover record that prints without words is recoverable; a 500 is not. -#}
+  {%- set amount_words = cheque_amount_in_arabic_words(doc.amount, doc.currency) if cheque_amount_in_arabic_words is defined else '' -%}
+  {% if amount_words %}
+  <div class="words">فقط: {{ amount_words }} لا غير.</div>
+  {% else %}
+  <div class="words">فقط: <span class="ltr">{{ frappe.utils.fmt_money(doc.amount, 2, doc.currency) }}</span> لا غير.</div>
+  {% endif %}
+
+  <div class="fbox">
+    <span class="f-t">تنبيه:</span>
+    تنتقل مسؤولية حفظ الشيك إلى المُستلِم اعتبارًا من تاريخ التوقيع أدناه.
+    <br>
+    <span class="f-t">Note:</span>
+    Custody of the cheque passes to the recipient from the date signed below.
+  </div>
+
+  {% if doc.remarks %}
+  <div class="notes"><b>ملاحظات — Remarks:</b> {{ doc.remarks }}</div>
+  {% endif %}
+
+  <div class="ack">
+    أقر أنا المُستلِم باستلام الشيك الموضحة بياناته أعلاه على سبيل العهدة، وألتزم بالمحافظة عليه وردّه أو تقديم ما يبرئ ذمتي عنه.
+  </div>
+
+  <table class="sigs">
+    <tr>
+      <td class="sig-box">
+        <div class="sig-title">المُسلِّم — Handed Over By</div>
+        <div class="sig-line">الاسم — Name: {{ from_party or '' }}</div>
+        <div class="sig-line">التوقيع — Signature:</div>
+      </td>
+      <td class="spacer"></td>
+      <td class="sig-box">
+        <div class="sig-title">المُستلِم — Received By</div>
+        <div class="sig-line">الاسم — Name: {{ to_party if to_party != '—' else '' }}</div>
+        <div class="sig-line">التوقيع والتاريخ — Signature &amp; Date:</div>
+      </td>
+    </tr>
+  </table>
+
+</div>
