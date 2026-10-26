@@ -142,9 +142,13 @@ def _is_the_incident(doc, wrong, right, cheque, cheque_book, wrong_no, right_no)
     # Never take a leaf from — or free a leaf of — another cheque.
     if (wrong.cheque or cheque) != cheque or (right.cheque or cheque) != cheque:
         return False
-    # An unlinked right leaf must still be blank paper; anything else means it
-    # was used or voided since, and this correction is no longer the right one.
+    # An unlinked leaf must still be blank paper; anything else means it was
+    # used or voided since — the wrong leaf after the correction, say, taken
+    # by a later cheque that was then cancelled — and this correction is no
+    # longer the right one.
     if not right.cheque and right.leaf_status != "Unused":
+        return False
+    if not wrong.cheque and wrong.leaf_status != "Unused":
         return False
     return True
 

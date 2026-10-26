@@ -13,13 +13,24 @@
 6. The one-time CHQ-2026-00004 correction, and that re-running it is a no-op.
 """
 
+import datetime
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
-from frappe.utils import add_days, add_to_date, get_datetime, getdate, now_datetime, today
+from frappe.utils import (
+    add_days,
+    add_to_date,
+    convert_utc_to_system_timezone,
+    get_datetime,
+    getdate,
+    now_datetime,
+    today,
+)
 
 from cheque_tracker.cheque_tracker.doctype.cheque.cheque import (
     change_cheque_status,
     reassign_cheque_leaf,
+    set_effective_date,
 )
 from cheque_tracker.cheque_tracker.doctype.cheque_book.test_cheque_book import make_cheque_book
 from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import release_leaf
@@ -240,15 +251,41 @@ class TestChosenLeaf(FrappeTestCase):
         with self.assertRaises(frappe.ValidationError):
             chq.save(ignore_permissions=True)
 
-    def test_insert_straight_at_docstatus_1_respects_the_chosen_number(self):
-        # An API client creating and issuing in one call never runs before_save.
-        chosen = self.leaves[3]
-        chq = _draft(self.book, cheque_no=chosen.cheque_no, docstatus=1)
+    def test_number_edited_and_submitted_in_one_call_is_respected(self):
+        # submit() runs validate + before_submit and never before_save, which
+        # is why assignment lives in validate.
+        chq = _draft(self.book)
+        self.assertEqual(chq.cheque_leaf, self.leaves[0].name)
+
+        chq.cheque_no = self.leaves[3].cheque_no
+        chq.submit()
         chq.reload()
 
         self.assertEqual(chq.status, "Issued")
+        self.assertEqual(chq.cheque_leaf, self.leaves[3].name)
+        issued = _leaf(self.leaves[3].name)
+        self.assertEqual(issued.leaf_status, "Issued")
+        self.assertEqual(getdate(issued.issued_on), getdate(ISSUE_DATE))
+        freed = _leaf(self.leaves[0].name)
+        self.assertEqual(freed.leaf_status, "Unused")
+        self.assertFalse(freed.cheque)
+
+    def test_whitespace_around_the_number_is_normalised(self):
+        chosen = self.leaves[2]
+        chq = _draft(self.book, cheque_no=f" {chosen.cheque_no} ")
         self.assertEqual(chq.cheque_leaf, chosen.name)
-        self.assertEqual(_leaf(chosen.name).leaf_status, "Issued")
+        self.assertEqual(chq.cheque_no, chosen.cheque_no)
+
+    def test_book_of_another_company_is_refused(self):
+        env = get_test_env()
+        start = 9_000_000 + int(frappe.generate_hash(length=8), 16) % 900_000
+        foreign = make_cheque_book(
+            start, start + 2, company=env["secondary_company"], bank_account=env["secondary_bank_account"]
+        )
+        foreign.submit()
+        with self.assertRaises(frappe.ValidationError):
+            _draft(foreign, bank_account=None)
+        self.assertEqual(_leaves(foreign)[0].leaf_status, "Unused")
 
     def test_issued_on_is_the_issue_date_not_today(self):
         chq = _issued(self.book)
@@ -261,14 +298,39 @@ class TestChosenLeaf(FrappeTestCase):
     def test_switching_a_draft_to_incoming_lets_go_of_its_leaf(self):
         chq = _draft(self.book)
         leaf = chq.cheque_leaf
+        # What the desk sends: the cheque_type handler blanks book and leaf the
+        # moment the type changes, so the save no longer names the leaf.
         chq.cheque_type = "Incoming"
+        chq.cheque_leaf = None
+        chq.cheque_book = None
         chq.cheque_no = "EXT-" + frappe.generate_hash(length=6)
         chq.drawee_bank = get_test_env()["drawee_bank"]
         chq.save(ignore_permissions=True)
 
         self.assertFalse(chq.cheque_leaf)
         self.assertFalse(chq.cheque_book)
-        self.assertEqual(_leaf(leaf).leaf_status, "Unused")
+        freed = _leaf(leaf)
+        self.assertEqual(freed.leaf_status, "Unused")
+        self.assertFalse(freed.cheque)
+
+    def test_outgoing_replacement_takes_its_number_from_the_leaf(self):
+        original = _issued(self.book)
+        e2e.act(original, "Hand Over")
+        e2e.set_fields(original, bounce_reason="Account Closed")
+        e2e.act(original, "Bounce")
+
+        chosen = self.leaves[4]
+        # The Replace dialog omits a blank Cheque No from the call entirely.
+        name = original.create_replacement(
+            issue_date=today(),
+            due_date=add_days(today(), 10),
+            cheque_book=self.book.name,
+            cheque_leaf=chosen.name,
+        )
+        replacement = frappe.get_doc("Cheque", name)
+        self.assertEqual(replacement.cheque_leaf, chosen.name)
+        self.assertEqual(replacement.cheque_no, chosen.cheque_no)
+        self.assertEqual(_leaf(chosen.name).leaf_status, "Reserved")
 
 
 # ====================================================================== #
@@ -408,6 +470,18 @@ class TestReassignLeaf(FrappeTestCase):
         with self.assertRaises(frappe.ValidationError):
             reassign_cheque_leaf(chq.name, reason=self.REASON, new_leaf=foreign.name)
 
+    def test_reassign_refuses_a_stale_copy_of_the_cheque(self):
+        # Two reassignments racing: the second still believes the cheque is on
+        # its original leaf.
+        chq = _issued(self.book)
+        stale = frappe.get_doc("Cheque", chq.name)
+        reassign_cheque_leaf(chq.name, reason=self.REASON, new_leaf=self.leaves[2].name)
+
+        with self.assertRaises(frappe.ValidationError):
+            stale.reassign_leaf(reason=self.REASON, new_leaf=self.leaves[3].name)
+        self.assertEqual(_leaf(self.leaves[3].name).leaf_status, "Unused")
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "cheque_leaf"), self.leaves[2].name)
+
     def test_reassign_refuses_a_draft(self):
         chq = _draft(self.book)
         with self.assertRaises(frappe.ValidationError):
@@ -504,6 +578,50 @@ class TestEffectiveDate(FrappeTestCase):
                 chq.name, "Handed Over", effective_date=str(add_to_date(now_datetime(), days=1))
             )
         self.assertEqual(frappe.db.get_value("Cheque", chq.name, "status"), "Issued")
+
+    def test_an_offset_timestamp_from_an_api_client_is_converted_not_a_500(self):
+        moment = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2)).replace(microsecond=0)
+        expected = convert_utc_to_system_timezone(moment).replace(tzinfo=None)
+
+        chq = e2e.make_outgoing(with_payment_entry=False)
+        change_cheque_status(chq.name, "Handed Over", effective_date=moment.isoformat())
+        self.assertEqual(get_datetime(self._event(chq.name, "Handed Over").event_datetime), expected)
+
+    def test_an_unparseable_effective_date_is_a_validation_error(self):
+        chq = e2e.make_outgoing(with_payment_entry=False)
+        with self.assertRaises(frappe.ValidationError):
+            change_cheque_status(chq.name, "Handed Over", effective_date="not a date")
+        self.assertEqual(frappe.db.get_value("Cheque", chq.name, "status"), "Issued")
+
+    def test_set_effective_date_parks_it_for_the_next_action(self):
+        # The endpoint exists for users the workflow makes read-only; it writes
+        # the one field, and the next transition consumes it.
+        chq = e2e.make_outgoing(with_payment_entry=False)
+        frappe.set_user(get_test_env()["treasury_user"])
+        try:
+            set_effective_date(chq.name, str(self.effective))
+        finally:
+            frappe.set_user("Administrator")
+        self.assertEqual(
+            get_datetime(frappe.db.get_value("Cheque", chq.name, "effective_date")), self.effective
+        )
+
+        e2e.act(chq, "Hand Over")
+        self.assertEqual(get_datetime(self._event(chq.name, "Handed Over").event_datetime), self.effective)
+        self.assertFalse(chq.effective_date)
+
+        with self.assertRaises(frappe.ValidationError):
+            set_effective_date(chq.name, str(add_to_date(now_datetime(), days=1)))
+
+    def test_set_effective_date_is_refused_without_write_permission(self):
+        chq = e2e.make_outgoing(with_payment_entry=False)
+        frappe.set_user(get_test_env()["auditor_user"])
+        try:
+            with self.assertRaises(frappe.PermissionError):
+                set_effective_date(chq.name, str(self.effective))
+        finally:
+            frappe.set_user("Administrator")
+        self.assertFalse(frappe.db.get_value("Cheque", chq.name, "effective_date"))
 
     def test_back_recorded_issue(self):
         chq = _draft(_book(3), effective_date=self.effective)
@@ -612,6 +730,18 @@ class TestChq00004Patch(FrappeTestCase):
         self.assertEqual(chq4_patch.correct_leaf(**self._correction()), "mismatch")
         self.assertEqual(self._snapshot(), before)
         self.assertEqual(_leaf(self.right.name).cheque, other.name)
+
+    def test_forced_rerun_leaves_a_since_voided_wrong_leaf_alone(self):
+        # After the correction the freed leaf can be taken by a later cheque
+        # that is then cancelled — Voided, unlinked. A forced re-run must not
+        # turn that spoilt paper back into Unused.
+        chq4_patch.correct_leaf(**self._correction())
+        release_leaf(self.wrong.name, status="Voided", void_reason="spoilt")
+        before = self._snapshot()
+
+        self.assertEqual(chq4_patch.correct_leaf(**self._correction()), "mismatch")
+        self.assertEqual(self._snapshot(), before)
+        self.assertEqual(_leaf(self.wrong.name).leaf_status, "Voided")
 
     def test_refuses_when_the_numbers_do_not_match(self):
         before = self._snapshot()

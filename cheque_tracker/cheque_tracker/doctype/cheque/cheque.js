@@ -46,6 +46,8 @@ frappe.ui.form.on("Cheque", {
         frm.set_query("cheque_leaf", () => {
             const filters = { leaf_status: "Unused" };
             if (frm.doc.cheque_book) filters.cheque_book = frm.doc.cheque_book;
+            if (frm.doc.company) filters.company = frm.doc.company;
+            if (frm.doc.bank_account) filters.bank_account = frm.doc.bank_account;
             return { filters };
         });
 
@@ -100,16 +102,6 @@ frappe.ui.form.on("Cheque", {
         _show_effective_date_intro(frm);
     },
 
-    // apply_workflow reloads the cheque from the database before it runs the
-    // transition (frappe/model/workflow.py:123), so an Effective Date typed but
-    // not saved would be silently dropped — and the desk keeps the workflow
-    // actions on screen while the form is dirty. Refuse instead of losing it.
-    // (Saving here is not an option: frm.save() does not settle on every
-    // validation error, which would leave the workflow's freeze on screen.)
-    before_workflow_action(frm) {
-        _block_if_dirty(frm, frm.selected_workflow_action, true);
-    },
-
     effective_date(frm) {
         _show_effective_date_intro(frm);
     },
@@ -123,6 +115,14 @@ frappe.ui.form.on("Cheque", {
         if (frm.doc.cheque_type === "Incoming") {
             frm.set_value("cheque_book", "");
             frm.set_value("cheque_leaf", "");
+        } else if (frm.doc.docstatus === 0 && frm.doc.cheque_no && !frm.doc.cheque_leaf) {
+            // Typed while the type was Incoming; Cheque No is read-only for an
+            // outgoing cheque, so a wrong number could not be fixed from here.
+            frm.set_value("cheque_no", "");
+            frappe.show_alert({
+                message: __("Cheque No cleared: pick the Cheque Leaf, or leave both blank for the next Unused leaf."),
+                indicator: "orange",
+            });
         }
     },
 
@@ -192,10 +192,24 @@ frappe.ui.form.on("Cheque", {
         frappe.db.get_value(
             "Cheque Leaf",
             frm.doc.cheque_leaf,
-            ["cheque_no", "cheque_book"],
+            ["cheque_no", "cheque_book", "company", "bank_account"],
             (r) => {
                 if (!r) return;
+                if (
+                    (frm.doc.company && r.company !== frm.doc.company) ||
+                    (frm.doc.bank_account && r.bank_account !== frm.doc.bank_account)
+                ) {
+                    frm.set_value("cheque_leaf", "");
+                    frappe.show_alert({
+                        message: __("That leaf belongs to another company or bank account."),
+                        indicator: "red",
+                    });
+                    return;
+                }
                 frm.set_value("cheque_no", r.cheque_no);
+                if (!frm.doc.bank_account && r.bank_account) {
+                    frm.set_value("bank_account", r.bank_account);
+                }
                 if (!frm.doc.cheque_book && r.cheque_book) {
                     frm.set_value("cheque_book", r.cheque_book);
                 }
@@ -255,30 +269,35 @@ function _show_effective_date_intro(frm) {
 }
 
 
-function _block_if_dirty(frm, action, release_freeze) {
-    if (!frm.is_dirty()) return;
-    // handle_workflow_action froze the screen before triggering us; it only
-    // unfreezes once apply_workflow returns, which it now never will.
-    if (release_freeze) frappe.dom.unfreeze();
-    frappe.throw(
-        __(
-            "Save the cheque before {0}: the action reloads it from the database, so unsaved changes such as the Effective Date would be lost.",
-            [__(action || "this action")]
-        )
-    );
-}
-
-
-// Offered in every action dialog, so a back-recorded Bounce / Clear / Endorse
-// carries its real date without a separate save first.
-function _effective_date_field(frm) {
-    return {
-        fieldname: "effective_date",
-        fieldtype: "Datetime",
-        label: __("Effective Date"),
-        default: frm.doc.effective_date,
-        description: __("When this really happened. Leave blank for now."),
-    };
+// On a submitted cheque the workflow makes the form read-only to anyone outside
+// the state's allow_edit role — the Accounts User about to Clear a Deposited
+// cheque, for one — so the date is parked through its own endpoint instead.
+function _show_effective_date_dialog(frm) {
+    const d = new frappe.ui.Dialog({
+        title: __("Set Effective Date"),
+        fields: [
+            {
+                fieldname: "effective_date",
+                fieldtype: "Datetime",
+                label: __("Effective Date"),
+                default: frm.doc.effective_date,
+                description: __("When the next action really happened. Leave blank to record it as now."),
+            },
+        ],
+        primary_action_label: __("Set"),
+        primary_action(values) {
+            frappe
+                .xcall("cheque_tracker.cheque_tracker.doctype.cheque.cheque.set_effective_date", {
+                    cheque_name: frm.doc.name,
+                    effective_date: values.effective_date || null,
+                })
+                .then(() => {
+                    d.hide();
+                    frm.reload_doc();
+                });
+        },
+    });
+    d.show();
 }
 
 
@@ -393,6 +412,13 @@ function _setup_buttons(frm) {
 
     _wrap_v12_actions(frm);
 
+    // frappe.model.can_write, not frm.perm: the workflow's read-only mode
+    // strips write from frm.perm, which would hide this from the very user it
+    // exists for.
+    if (frappe.model.can_write(frm.doctype)) {
+        frm.add_custom_button(__("Set Effective Date"), () => _show_effective_date_dialog(frm));
+    }
+
     if (
         frm.doc.cheque_type === "Outgoing" &&
         frm.doc.cheque_book &&
@@ -477,7 +503,6 @@ function _wrap_action_with_fields(frm, action, opts) {
 
     $btn.off("click").on("click", () => {
         if (opts.is_ready && opts.is_ready(frm)) {
-            _block_if_dirty(frm, action);
             frappe
                 .xcall("frappe.model.workflow.apply_workflow", { doc: frm.doc, action })
                 .then(() => frm.reload_doc());
@@ -486,7 +511,7 @@ function _wrap_action_with_fields(frm, action, opts) {
 
         const d = new frappe.ui.Dialog({
             title: opts.title,
-            fields: [...opts.fields(frm), _effective_date_field(frm)],
+            fields: opts.fields(frm),
             primary_action_label: opts.primary_label || __("Confirm"),
             primary_action(values) {
                 Object.assign(frm.doc, values);
@@ -662,7 +687,6 @@ function _wrap_clear_action(frm) {
 
     $btn.off("click").on("click", () => {
         if (frm.doc.cleared_date && frm.doc.bank_account) {
-            _block_if_dirty(frm, "Clear");
             frappe.xcall("frappe.model.workflow.apply_workflow", {
                 doc: frm.doc,
                 action: "Clear",
@@ -688,7 +712,6 @@ function _wrap_clear_action(frm) {
                     default: frm.doc.bank_account,
                     reqd: 1,
                 },
-                _effective_date_field(frm),
                 ..._clearance_override_fields(frm),
             ],
             primary_action_label: __("Confirm Clearing"),

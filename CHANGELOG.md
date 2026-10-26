@@ -24,15 +24,25 @@ of the book and overwrote `cheque_no` with that leaf's number, without a word.
 - On a draft, retyping the number moves the reservation to that number's leaf;
   picking a different leaf carries its number. The abandoned leaf goes back to
   Unused.
-- Assignment moved from `before_save` to `validate`, so it also runs when a
-  cheque is inserted straight at docstatus 1 (create-and-issue in one API call),
-  which never runs `before_save`.
+- Assignment moved from `before_save` to `validate`. A draft whose number is
+  edited and then submitted in one call (`doc.submit()`, `frappe.client.submit`)
+  never runs `before_save`, so the edit used to be ignored. Inserting straight
+  at docstatus 1 is refused by the active Cheque Workflow, as before.
+- The number is always stored in the leaf's own spelling, so a stray space from
+  an import resolves instead of failing the exact-match check.
+- The book must belong to the cheque's company, and to its bank account when
+  one is set. The leaf picker could otherwise fill in a book from another
+  company or bank.
 - The desk: **Cheque Leaf** is now editable on a draft and searchable by number
   (Cheque Leaf shows its `cheque_no` as its title). Its filter asked for
   `leaf_status = "Available"`, a status that does not exist, so the picker had
-  always been empty; it now lists Unused leaves of the selected book. The same
-  fix applies to the Replace dialog. **Cheque No** is no longer required on the
-  form for an outgoing cheque, so leaving both blank actually reaches the server.
+  always been empty. It now lists Unused leaves of the selected book, company and
+  bank account. The same fix applies to the Replace dialog, where an outgoing
+  replacement no longer needs a typed number (`create_replacement` takes it from
+  the leaf). **Cheque No** is no longer required on the form for an outgoing
+  cheque, so leaving both blank actually reaches the server. A number typed
+  while the type was Incoming is cleared, with a note, on switching to Outgoing.
+  Switching a draft from Outgoing to Incoming frees its reserved leaf.
 
 ### `issued_on` is the issue date
 
@@ -56,7 +66,9 @@ A **Reassign Leaf** button on submitted outgoing cheques, plus
 - the new leaf takes over as Issued (or Cancelled for a returned cheque), with
   `issued_on` = the cheque's issue date;
 - `cheque_no` follows the new leaf;
-- a **reason is mandatory** and is logged, with the user, as a Cheque Event.
+- a **reason is mandatory** and is logged, with the user, as a Cheque Event;
+- the cheque row is locked first, so two reassignments of the same cheque
+  cannot both move it off the same old leaf.
 
 The linked Payment Entry is not touched. If its reference still carries the old
 number, the user is told to correct it there.
@@ -75,11 +87,14 @@ it was actually keyed in. Then:
 - Clear uses its date for `cleared_date` when none was given;
 - it works for submit (Issue / Receive), every workflow action, Cancel Cheque,
   and `change_cheque_status(..., effective_date=...)`;
-- a workflow action on a form with unsaved changes is now refused with "save
-  first". `apply_workflow` reloads the cheque from the database, so a typed
-  Effective Date, or any other unsaved edit, used to vanish without a word. The
-  Endorse / Bounce / Cash Clear / Clear dialogs offer the Effective Date
-  directly.
+- in the desk: type it into the field and **Update**, then run the action. On a
+  submitted cheque the workflow makes the form read-only to anyone outside the
+  state's edit role, such as the Accounts User about to Clear a Deposited
+  cheque, so a **Set Effective Date** button (and `set_effective_date`) parks it
+  for anyone with write permission;
+- an ISO timestamp with an offset is converted to the system time zone, and an
+  unparseable one is a validation error;
+- it is not copied by Duplicate.
 
 ### CHQ-2026-00004 correction (`patches/v3_4/fix_chq_2026_00004_leaf`)
 
@@ -90,8 +105,8 @@ recomputed and the correction is logged on the cheque's timeline.
 
 The patch writes only what differs, so a re-run is a no-op. It also touches
 nothing unless every record matches the incident: same cheque, same book, both
-leaves and both numbers, and neither leaf held by another cheque. On any other
-site it does nothing.
+leaves and both numbers, neither leaf held by another cheque, and any unlinked
+leaf still Unused. On any other site it does nothing.
 
 ## v1.3.1 — Bundled Cairo, un-clear, editable references (2026-08-11)
 

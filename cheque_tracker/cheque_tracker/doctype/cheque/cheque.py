@@ -4,7 +4,15 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import add_to_date, format_datetime, get_datetime, getdate, now_datetime, today
+from frappe.utils import (
+    add_to_date,
+    convert_utc_to_system_timezone,
+    format_datetime,
+    get_datetime,
+    getdate,
+    now_datetime,
+    today,
+)
 
 from cheque_tracker.cheque_tracker.doctype.cheque import cheque_financial
 from cheque_tracker.cheque_tracker.doctype.cheque_leaf.cheque_leaf import (
@@ -94,13 +102,13 @@ class Cheque(Document):
         # Leaf assignment runs here rather than in before_save: `validate` runs
         # for a save AND a submit (frappe/model/document.py
         # run_before_save_methods), while before_save only runs for a save — so
-        # inserting straight at docstatus 1, which is how an API client creates
-        # and issues a cheque in one call, never reached it.
+        # a draft whose number was edited and then submitted in one call
+        # (doc.submit(), frappe.client.submit) never had it re-resolved.
         if self.cheque_type == "Outgoing":
             self._assign_outgoing_leaf()
-        elif self.cheque_leaf:
+        else:
             self._drop_leaf_from_incoming()
-        _validate_effective_date(self.get("effective_date"))
+        self.effective_date = _parse_effective_date(self.get("effective_date"))
 
     def before_save(self):
         self._validate_outgoing_cheque_no()
@@ -118,7 +126,7 @@ class Cheque(Document):
         before = self.get_doc_before_save()
         if before and before.status != self.status:
             _validate_status_requirements(self, self.status, old_status=before.status)
-        _validate_effective_date(self.get("effective_date"))
+        self.effective_date = _parse_effective_date(self.get("effective_date"))
         cheque_financial.validate_payment_entry_link(self)
         cheque_financial.validate_clearance_override(self)
         cheque_financial.validate_reference_edit_after_submit(self)
@@ -371,6 +379,7 @@ class Cheque(Document):
                 _("Cheque Book is required for Outgoing cheques."),
                 frappe.ValidationError,
             )
+        self._validate_cheque_book_matches()
 
         typed_no = (self.cheque_no or "").strip()
         leaf = self._requested_leaf(typed_no)
@@ -410,16 +419,44 @@ class Cheque(Document):
                 free_leaf(name, self.name)
 
         self.cheque_leaf = leaf.name
-        if typed_no != leaf.cheque_no:
-            if typed_no:
-                frappe.msgprint(
-                    _("Cheque No changed from {0} to {1} to match Cheque Leaf {2}.").format(
-                        typed_no, leaf.cheque_no, leaf.name
-                    ),
-                    alert=True,
-                    indicator="orange",
-                )
-            self.cheque_no = leaf.cheque_no
+        if typed_no and typed_no != leaf.cheque_no:
+            frappe.msgprint(
+                _("Cheque No changed from {0} to {1} to match Cheque Leaf {2}.").format(
+                    typed_no, leaf.cheque_no, leaf.name
+                ),
+                alert=True,
+                indicator="orange",
+            )
+        # Always the leaf's own spelling — a stray space from an import would
+        # otherwise trip _validate_outgoing_cheque_no's exact comparison.
+        self.cheque_no = leaf.cheque_no
+
+    def _validate_cheque_book_matches(self):
+        """The book has to be one this cheque can be drawn on.
+
+        The leaf picker can fill in the book from whichever leaf was picked, so
+        the company and bank account are checked here rather than trusted to
+        the Cheque Book picker's filter.
+        """
+        book = frappe.db.get_value(
+            "Cheque Book", self.cheque_book, ["company", "bank_account"], as_dict=True
+        )
+        if not book:
+            return
+        if self.company and book.company != self.company:
+            frappe.throw(
+                _("Cheque Book {0} belongs to {1}, not {2}.").format(
+                    self.cheque_book, book.company, self.company
+                ),
+                frappe.ValidationError,
+            )
+        if self.bank_account and book.bank_account and book.bank_account != self.bank_account:
+            frappe.throw(
+                _("Cheque Book {0} is for bank account {1}, but this cheque is drawn on {2}.").format(
+                    self.cheque_book, book.bank_account, self.bank_account
+                ),
+                frappe.ValidationError,
+            )
 
     def _requested_leaf(self, typed_no):
         """The leaf the user asked for, or None when they asked for none.
@@ -489,8 +526,18 @@ class Cheque(Document):
         )
 
     def _drop_leaf_from_incoming(self):
-        """An incoming cheque is not drawn on our books — let go of any leaf."""
-        free_leaf(self.cheque_leaf, self.name)
+        """An incoming cheque is not drawn on our books — let go of any leaf.
+
+        Frees what the cheque actually holds, not just what the form says: the
+        desk blanks Cheque Leaf the moment the type changes to Incoming, so by
+        save time the field no longer names the reserved leaf.
+        """
+        before = self.get_doc_before_save()
+        names = set(self._held_leaves()) if before and before.cheque_type == "Outgoing" else set()
+        if self.cheque_leaf:
+            names.add(self.cheque_leaf)
+        for name in names:
+            free_leaf(name, self.name)
         self.cheque_leaf = None
         self.cheque_book = None
 
@@ -541,9 +588,7 @@ class Cheque(Document):
         old_status = self.status
         # An explicit effective_date (the API argument) wins over one parked on
         # the document; either way it is consumed by this transition.
-        requested = effective_date or self.get("effective_date")
-        effective = get_datetime(requested) if requested else None
-        _validate_effective_date(effective)
+        effective = _parse_effective_date(effective_date or self.get("effective_date"))
 
         updates = {"status": new_status}
         if self.get("effective_date"):
@@ -738,13 +783,22 @@ class Cheque(Document):
         return replacement.name
 
     @frappe.whitelist()
-    def create_replacement(self, cheque_no, issue_date, due_date,
+    def create_replacement(self, cheque_no=None, issue_date=None, due_date=None,
                            drawee_bank=None, cheque_book=None,
                            cheque_leaf=None, amount=None):
         """Create a new Draft Cheque pre-filled from this Bounced cheque,
         link it bidirectionally, and apply the Replace workflow action.
-        Returns the new draft's name."""
+        Returns the new draft's name.
+
+        An outgoing replacement may leave cheque_no blank: its number is the
+        chosen leaf's. The dialog omits a blank field from the call entirely,
+        which is why every argument has a default."""
         self._validate_can_be_replaced()
+        if not issue_date or not due_date:
+            frappe.throw(_("Issue Date and Due Date are required."), frappe.ValidationError)
+        cheque_no = (cheque_no or "").strip() or None
+        if self.cheque_type != "Outgoing" and not cheque_no:
+            frappe.throw(_("Cheque No is required for the replacement."), frappe.ValidationError)
 
         replacement = frappe.new_doc("Cheque")
         replacement.cheque_type = self.cheque_type
@@ -824,6 +878,18 @@ class Cheque(Document):
             )
         if not (new_leaf or (cheque_no or "").strip()):
             frappe.throw(_("Choose the leaf to move this cheque to."), frappe.ValidationError)
+
+        # Lock the cheque before any leaf (the order a save takes them in), so
+        # two reassignments of the same cheque queue up instead of both moving
+        # it off the same old leaf and orphaning one of the new ones.
+        current = frappe.db.get_value("Cheque", self.name, "cheque_leaf", for_update=True)
+        if current != self.cheque_leaf:
+            frappe.throw(
+                _("The leaf of {0} was changed by someone else just now. Reload and try again.").format(
+                    self.name
+                ),
+                frappe.ValidationError,
+            )
 
         if new_leaf:
             target = get_leaf(new_leaf)
@@ -1183,6 +1249,31 @@ def _validate_status_requirements(doc, new_status: str, old_status: str = None):
         cheque_financial.validate_bounce(_with_status(doc, "Bounced"))
 
 
+def _parse_effective_date(value):
+    """The Effective Date as a naive datetime in the system time zone, or None.
+
+    API callers send whatever their client produces — an ISO string with a `Z`
+    or an offset compares as aware against the naive server clock and raised a
+    TypeError — so it is normalised once here, and anything unparseable is a
+    validation error rather than a 500 (or, worse, silently "now").
+    """
+    if not value:
+        return None
+    try:
+        parsed = get_datetime(value)
+    except Exception:
+        parsed = None
+    if not parsed:
+        frappe.throw(
+            _("Effective Date {0} is not a valid date and time.").format(value),
+            frappe.ValidationError,
+        )
+    if parsed.tzinfo:
+        parsed = convert_utc_to_system_timezone(parsed).replace(tzinfo=None)
+    _validate_effective_date(parsed)
+    return parsed
+
+
 def _validate_effective_date(value):
     """An Effective Date says when a transition really happened, so it cannot
     be later than now (plus a few minutes of clock skew)."""
@@ -1277,6 +1368,24 @@ def reassign_cheque_leaf(
     frappe.has_permission("Cheque", "read", doc=doc, throw=True)
     moved = doc.reassign_leaf(reason=reason, new_leaf=new_leaf, cheque_no=cheque_no)
     return {"status": "ok", "cheque_leaf": moved["name"], "cheque_no": moved["cheque_no"]}
+
+
+@frappe.whitelist()
+def set_effective_date(cheque_name: str, effective_date: str | None = None):
+    """Park (or clear) the Effective Date for a cheque's next action.
+
+    The desk makes a submitted cheque read-only to anyone outside the workflow
+    state's allow_edit role, so the Accounts User who clears a Deposited cheque
+    could not type the date into the form. This writes that one field and
+    nothing else; the next transition consumes it.
+    """
+    doc = frappe.get_doc("Cheque", cheque_name)
+    frappe.has_permission("Cheque", "write", doc=doc, throw=True)
+    if doc.docstatus == 2:
+        frappe.throw(_("{0} is cancelled.").format(doc.name), frappe.ValidationError)
+    value = _parse_effective_date(effective_date)
+    frappe.db.set_value("Cheque", doc.name, "effective_date", value, update_modified=False)
+    return {"effective_date": value}
 
 
 @frappe.whitelist()

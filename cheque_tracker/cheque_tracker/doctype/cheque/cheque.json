@@ -187,7 +187,8 @@
    "description": "When the next action really happened, for back-recording it. Leave blank for now. Cleared once the action is recorded.",
    "fieldname": "effective_date",
    "fieldtype": "Datetime",
-   "label": "Effective Date"
+   "label": "Effective Date",
+   "no_copy": 1
   },
   {
    "fieldname": "section_cheque",
