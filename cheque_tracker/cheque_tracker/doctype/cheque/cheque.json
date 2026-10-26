@@ -24,6 +24,7 @@
   "col_break_dates",
   "cleared_date",
   "bounce_reason",
+  "effective_date",
   "section_cheque",
   "cheque_no",
   "drawee_bank",
@@ -182,6 +183,13 @@
    "description": "Required when bouncing a cheque; surfaced in the Bounced Cheques Register."
   },
   {
+   "allow_on_submit": 1,
+   "description": "When the next action really happened, for back-recording it. Leave blank for now. Cleared once the action is recorded.",
+   "fieldname": "effective_date",
+   "fieldtype": "Datetime",
+   "label": "Effective Date"
+  },
+  {
    "fieldname": "section_cheque",
    "fieldtype": "Section Break",
    "label": "Cheque Details"
@@ -254,7 +262,7 @@
    "fieldtype": "Link",
    "label": "Cheque Leaf",
    "options": "Cheque Leaf",
-   "read_only": 1
+   "description": "The leaf this cheque was written on. Leave blank (with Cheque No) to take the next Unused leaf of the book."
   },
   {
    "fieldname": "section_custody",
@@ -468,7 +476,7 @@
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2026-05-03 00:00:00.000000",
+ "modified": "2026-10-26 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque",

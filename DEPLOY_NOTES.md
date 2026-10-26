@@ -76,3 +76,47 @@ a no-op there and staging will not exercise it. The migration only matters on
 6. After v1.3.0: print one **Cheque Receipt Voucher** and confirm the Arabic
    amount-in-words renders. `wkhtmltopdf` was absent on the build machine, so PDF
    generation itself was only proven at HTML level.
+
+## v1.3.1 leaf / back-dating fixes — what to check on the production site
+
+The production site already reports `cheque_tracker` 1.3.1; this ships under the
+same number. It carries one data patch, `cheque_tracker.patches.v3_4.fix_chq_2026_00004_leaf`,
+written against the live records as read on 2026-10-26.
+
+1. **Migrate twice.** The first migrate prints
+   `[cheque_tracker] CHQ-2026-00004 leaf correction: corrected`; the second runs
+   no patch at all (Patch Log). Run `verify_fixtures` after each:
+
+   ```
+   bench --site <site> migrate
+   bench --site <site> execute cheque_tracker.tests.verify_fixtures.run
+   bench --site <site> migrate
+   bench --site <site> execute cheque_tracker.tests.verify_fixtures.run
+   ```
+
+   No fixture file changed in this release, so the Property Setter that keeps
+   Cheque No read-only for outgoing cheques and the Cheque Workflow re-import as
+   they are.
+
+2. **The correction landed and held:**
+
+   ```sql
+   SELECT name, cheque_no, cheque_leaf, status FROM `tabCheque` WHERE name='CHQ-2026-00004';
+   -- 528201382 | e75gf78oeh | Returned
+   SELECT name, cheque_no, leaf_status, cheque, issued_on FROM `tabCheque Leaf`
+   WHERE name IN ('e75gf78oeh','e75ge51640');
+   -- e75gf78oeh | 528201382 | Cancelled | CHQ-2026-00004 | 2026-10-18
+   -- e75ge51640 | 528201380 | Unused    | NULL           | NULL
+   SELECT unused_leaves, issued_leaves, cancelled_leaves FROM `tabCheque Book`
+   WHERE name='CHQBK-2026-00001';
+   -- 12 | 1 | 1
+   ```
+
+   If the first migrate prints `mismatch` instead, someone changed one of these
+   records after 2026-10-26 and the patch wrote nothing. Fix it by hand with
+   **Reassign Leaf** on CHQ-2026-00004.
+
+3. **Smoke:** create an outgoing draft, pick a leaf that is *not* the next
+   Unused one, then save and Issue: the cheque keeps that leaf and number. Then
+   set **Effective Date** to yesterday, Update, and Hand Over: the Handed Over
+   timeline row shows yesterday.

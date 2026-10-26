@@ -34,7 +34,8 @@ def _outgoing(cb, company, customer, currency):
     chq.currency     = currency
     chq.due_date     = frappe.utils.add_days(frappe.utils.today(), 30)
     chq.cheque_book  = cb.name
-    chq.cheque_no    = "PLACEHOLDER"  # overwritten by before_save
+    # Cheque No and Cheque Leaf left blank: that is how a clerk asks for the
+    # next Unused leaf. A number that is not a leaf of the book is refused.
     chq.flags.ignore_permissions = True
     chq.insert()
     chq = frappe.get_doc("Cheque", chq.name)
@@ -174,7 +175,6 @@ class TestCheque(FrappeTestCase):
                 chq.currency = cy
                 chq.due_date = frappe.utils.add_days(frappe.utils.today(), 30)
                 chq.cheque_book = cb.name
-                chq.cheque_no = "PLACEHOLDER"
                 chq.flags.ignore_permissions = True
                 with self.assertRaises(frappe.ValidationError):
                     chq.insert()

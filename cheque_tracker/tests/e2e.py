@@ -125,7 +125,7 @@ def make_outgoing(env=None, submit=True, start=None, with_payment_entry=True, **
             "issue_date": today(),
             "due_date": add_days(today(), 15),
             "cheque_book": book.name,
-            "cheque_no": "PLACEHOLDER",
+            # Blank number and leaf → the next Unused leaf of the fresh book.
             "bank_account": env["bank_account"],
             "drawee_bank": env["drawee_bank"],
         }

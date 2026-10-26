@@ -1,5 +1,98 @@
 # CHANGELOG
 
+## v1.3.1 — Leaf assignment and back-dating fixes (2026-10-26)
+
+Second half of 1.3.1; the version number is unchanged. One new field
+(`Cheque.effective_date`), one data patch, no fixture changes.
+
+### The chosen leaf is the leaf used
+
+Leaf reservation ignored what it was given. It always took the first Unused leaf
+of the book and overwrote `cheque_no` with that leaf's number, without a word.
+**CHQ-2026-00004** was written on 528201382 and recorded as 528201380.
+
+- An outgoing cheque now holds the leaf it names, by **Cheque Leaf** or by
+  **Cheque No**, as long as that leaf is **Unused** and belongs to the selected
+  **Cheque Book**. A number typed with the bank's zero padding (000528201382)
+  still finds leaf 528201382.
+- The next Unused leaf is picked **only when both are blank**, and the clerk is
+  told which one was assigned.
+- A leaf that is Reserved for another cheque, Issued, Voided or Cancelled is
+  **refused** with the reason (and the cheque holding it). So is a leaf from a
+  different book, a number that is no leaf of the book, and a leaf and number
+  that disagree. Nothing is silently overwritten.
+- On a draft, retyping the number moves the reservation to that number's leaf;
+  picking a different leaf carries its number. The abandoned leaf goes back to
+  Unused.
+- Assignment moved from `before_save` to `validate`, so it also runs when a
+  cheque is inserted straight at docstatus 1 (create-and-issue in one API call),
+  which never runs `before_save`.
+- The desk: **Cheque Leaf** is now editable on a draft and searchable by number
+  (Cheque Leaf shows its `cheque_no` as its title). Its filter asked for
+  `leaf_status = "Available"`, a status that does not exist, so the picker had
+  always been empty; it now lists Unused leaves of the selected book. The same
+  fix applies to the Replace dialog. **Cheque No** is no longer required on the
+  form for an outgoing cheque, so leaving both blank actually reaches the server.
+
+### `issued_on` is the issue date
+
+A leaf's `issued_on` is the cheque's `issue_date`, not the day it was keyed in.
+It falls back to today only when the cheque has no issue date.
+
+### A returned outgoing cheque cancels its leaf
+
+Return (workflow or `change_cheque_status`, from Issued, Handed Over or
+Presented) sets the leaf to **Cancelled**, still linked to the cheque, with the
+return date in the reason, and logs it on the timeline. Bounce leaves the leaf
+Issued.
+
+### Reassign Leaf (System Manager)
+
+A **Reassign Leaf** button on submitted outgoing cheques, plus
+`reassign_cheque_leaf(cheque_name, reason, new_leaf=None, cheque_no=None)`:
+
+- the target must be an **Unused** leaf of the **same book**;
+- the old leaf goes back to **Unused**, unlinked;
+- the new leaf takes over as Issued (or Cancelled for a returned cheque), with
+  `issued_on` = the cheque's issue date;
+- `cheque_no` follows the new leaf;
+- a **reason is mandatory** and is logged, with the user, as a Cheque Event.
+
+The linked Payment Entry is not touched. If its reference still carries the old
+number, the user is told to correct it there.
+
+### Effective Date on transitions
+
+A new optional **Effective Date** (Datetime, editable after submit). Set it
+before an action and that transition's timeline rows (the status event and its
+custody / leaf notes) carry it instead of now, so a Hand Over, Return or Deposit
+recorded days later shows the day it happened. The note adds when, and by whom,
+it was actually keyed in. Then:
+
+- it is **consumed**: cleared once the action is recorded, so the next action
+  defaults to now again. Saving it on its own records nothing;
+- it may not be in the future (5 minutes of clock skew allowed);
+- Clear uses its date for `cleared_date` when none was given;
+- it works for submit (Issue / Receive), every workflow action, Cancel Cheque,
+  and `change_cheque_status(..., effective_date=...)`;
+- a workflow action on a form with unsaved changes is now refused with "save
+  first". `apply_workflow` reloads the cheque from the database, so a typed
+  Effective Date, or any other unsaved edit, used to vanish without a word. The
+  Endorse / Bounce / Cash Clear / Clear dialogs offer the Effective Date
+  directly.
+
+### CHQ-2026-00004 correction (`patches/v3_4/fix_chq_2026_00004_leaf`)
+
+The cheque gets `cheque_no` **528201382** and leaf **e75gf78oeh**, which becomes
+Cancelled (the cheque was returned), linked, `issued_on` **2026-10-18**. Leaf
+**e75ge51640** (528201380) goes back to Unused and unlinked. Book counters are
+recomputed and the correction is logged on the cheque's timeline.
+
+The patch writes only what differs, so a re-run is a no-op. It also touches
+nothing unless every record matches the incident: same cheque, same book, both
+leaves and both numbers, and neither leaf held by another cheque. On any other
+site it does nothing.
+
 ## v1.3.1 — Bundled Cairo, un-clear, editable references (2026-08-11)
 
 Patch release. No migration, no data rewrite; one new field and two new workflow
