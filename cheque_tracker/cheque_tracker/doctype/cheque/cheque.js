@@ -41,9 +41,13 @@ frappe.ui.form.on("Cheque", {
             return { filters };
         });
 
+        // "Unused" is the leaf state that can still be written. The filter used
+        // to ask for "Available", which no leaf ever is, so the picker was empty.
         frm.set_query("cheque_leaf", () => {
-            const filters = { leaf_status: "Available" };
+            const filters = { leaf_status: "Unused" };
             if (frm.doc.cheque_book) filters.cheque_book = frm.doc.cheque_book;
+            if (frm.doc.company) filters.company = frm.doc.company;
+            if (frm.doc.bank_account) filters.bank_account = frm.doc.bank_account;
             return { filters };
         });
 
@@ -95,6 +99,11 @@ frappe.ui.form.on("Cheque", {
         _setup_buttons(frm);
         _toggle_cheque_book_fields(frm);
         _toggle_clearance_type_fields(frm);
+        _show_effective_date_intro(frm);
+    },
+
+    effective_date(frm) {
+        _show_effective_date_intro(frm);
     },
 
     status(frm) {
@@ -106,6 +115,14 @@ frappe.ui.form.on("Cheque", {
         if (frm.doc.cheque_type === "Incoming") {
             frm.set_value("cheque_book", "");
             frm.set_value("cheque_leaf", "");
+        } else if (frm.doc.docstatus === 0 && frm.doc.cheque_no && !frm.doc.cheque_leaf) {
+            // Typed while the type was Incoming; Cheque No is read-only for an
+            // outgoing cheque, so a wrong number could not be fixed from here.
+            frm.set_value("cheque_no", "");
+            frappe.show_alert({
+                message: __("Cheque No cleared: pick the Cheque Leaf, or leave both blank for the next Unused leaf."),
+                indicator: "orange",
+            });
         }
     },
 
@@ -148,9 +165,56 @@ frappe.ui.form.on("Cheque", {
     },
 
     cheque_book(frm) {
+        if (frm.doc.docstatus !== 0) return;
         if (!frm.doc.cheque_book) {
             frm.set_value("cheque_leaf", "");
+            return;
         }
+        // A leaf from another book cannot be used; let the user pick again.
+        if (frm.doc.cheque_leaf) {
+            frappe.db.get_value("Cheque Leaf", frm.doc.cheque_leaf, "cheque_book", (r) => {
+                if (r && r.cheque_book !== frm.doc.cheque_book) {
+                    frm.set_value("cheque_leaf", "");
+                }
+            });
+        }
+    },
+
+    // The leaf is the clerk's choice; its number follows it. Clearing the leaf
+    // clears the number too, which is what asks the server for the next Unused
+    // leaf on save.
+    cheque_leaf(frm) {
+        if (frm.doc.cheque_type !== "Outgoing" || frm.doc.docstatus !== 0) return;
+        if (!frm.doc.cheque_leaf) {
+            frm.set_value("cheque_no", "");
+            return;
+        }
+        frappe.db.get_value(
+            "Cheque Leaf",
+            frm.doc.cheque_leaf,
+            ["cheque_no", "cheque_book", "company", "bank_account"],
+            (r) => {
+                if (!r) return;
+                if (
+                    (frm.doc.company && r.company !== frm.doc.company) ||
+                    (frm.doc.bank_account && r.bank_account !== frm.doc.bank_account)
+                ) {
+                    frm.set_value("cheque_leaf", "");
+                    frappe.show_alert({
+                        message: __("That leaf belongs to another company or bank account."),
+                        indicator: "red",
+                    });
+                    return;
+                }
+                frm.set_value("cheque_no", r.cheque_no);
+                if (!frm.doc.bank_account && r.bank_account) {
+                    frm.set_value("bank_account", r.bank_account);
+                }
+                if (!frm.doc.cheque_book && r.cheque_book) {
+                    frm.set_value("cheque_book", r.cheque_book);
+                }
+            }
+        );
     },
 
     party_type(frm) {
@@ -184,6 +248,61 @@ function _toggle_cheque_book_fields(frm) {
     const isIncoming = frm.doc.cheque_type === "Incoming";
     frm.toggle_display("cheque_book", !isIncoming);
     frm.toggle_display("cheque_leaf", !isIncoming);
+    // An outgoing cheque's number comes from its leaf. Leaving both blank is
+    // how a clerk asks for the next Unused leaf, so the desk must not insist on
+    // a number the server is about to fill in.
+    frm.toggle_reqd("cheque_no", frm.doc.cheque_type !== "Outgoing");
+}
+
+
+function _show_effective_date_intro(frm) {
+    if (frm.doc.effective_date) {
+        frm.set_intro(
+            __("The next action will be recorded as having happened on {0}.", [
+                frappe.datetime.str_to_user(frm.doc.effective_date),
+            ]),
+            "orange"
+        );
+    } else {
+        frm.set_intro("");
+    }
+}
+
+
+// On a submitted cheque the workflow makes the form read-only to anyone outside
+// the state's allow_edit role — the Accounts User about to Clear a Deposited
+// cheque, for one — so the date is parked through its own endpoint instead.
+function _show_effective_date_dialog(frm) {
+    // Setting it reloads the form, which would throw away unsaved edits.
+    if (frm.is_dirty()) {
+        frappe.msgprint(__("Save (Update) or discard your changes before setting the Effective Date."));
+        return;
+    }
+    const d = new frappe.ui.Dialog({
+        title: __("Set Effective Date"),
+        fields: [
+            {
+                fieldname: "effective_date",
+                fieldtype: "Datetime",
+                label: __("Effective Date"),
+                default: frm.doc.effective_date,
+                description: __("When the next action really happened. Leave blank to record it as now."),
+            },
+        ],
+        primary_action_label: __("Set"),
+        primary_action(values) {
+            frappe
+                .xcall("cheque_tracker.cheque_tracker.doctype.cheque.cheque.set_effective_date", {
+                    cheque_name: frm.doc.name,
+                    effective_date: values.effective_date || null,
+                })
+                .then(() => {
+                    d.hide();
+                    frm.reload_doc();
+                });
+        },
+    });
+    d.show();
 }
 
 
@@ -297,6 +416,78 @@ function _setup_buttons(frm) {
     }
 
     _wrap_v12_actions(frm);
+
+    // frappe.model.can_write, not frm.perm: the workflow's read-only mode
+    // strips write from frm.perm, which would hide this from the very user it
+    // exists for.
+    if (frappe.model.can_write(frm.doctype)) {
+        frm.add_custom_button(__("Set Effective Date"), () => _show_effective_date_dialog(frm));
+    }
+
+    if (
+        frm.doc.cheque_type === "Outgoing" &&
+        frm.doc.cheque_book &&
+        frm.doc.cheque_leaf &&
+        frappe.user.has_role("System Manager")
+    ) {
+        frm.add_custom_button(__("Reassign Leaf"), () => _show_reassign_leaf_dialog(frm));
+    }
+}
+
+
+// System Manager correction for a cheque recorded against the wrong leaf. The
+// server frees the old leaf back to Unused, moves the cheque (and its number)
+// to the new one, and logs the reason on the timeline.
+function _show_reassign_leaf_dialog(frm) {
+    const d = new frappe.ui.Dialog({
+        title: __("Reassign Leaf of {0}", [frm.doc.name]),
+        fields: [
+            {
+                fieldtype: "HTML",
+                options: `<p>${__(
+                    "Currently on leaf {0} of {1}. The new leaf must be an Unused leaf of the same book; the current one goes back to Unused.",
+                    [
+                        frappe.utils.escape_html(frm.doc.cheque_no || ""),
+                        frappe.utils.escape_html(frm.doc.cheque_book || ""),
+                    ]
+                )}</p>`,
+            },
+            {
+                fieldname: "new_leaf",
+                fieldtype: "Link",
+                options: "Cheque Leaf",
+                label: __("New Cheque Leaf"),
+                reqd: 1,
+                get_query: () => ({
+                    filters: { cheque_book: frm.doc.cheque_book, leaf_status: "Unused" },
+                }),
+            },
+            {
+                fieldname: "reason",
+                fieldtype: "Small Text",
+                label: __("Reason"),
+                reqd: 1,
+            },
+        ],
+        primary_action_label: __("Reassign Leaf"),
+        primary_action(values) {
+            frappe
+                .xcall("cheque_tracker.cheque_tracker.doctype.cheque.cheque.reassign_cheque_leaf", {
+                    cheque_name: frm.doc.name,
+                    new_leaf: values.new_leaf,
+                    reason: values.reason,
+                })
+                .then((r) => {
+                    d.hide();
+                    frm.reload_doc();
+                    frappe.show_alert({
+                        message: __("Cheque {0} is now on leaf {1}.", [frm.doc.name, r.cheque_no]),
+                        indicator: "green",
+                    });
+                });
+        },
+    });
+    d.show();
 }
 
 
@@ -624,7 +815,7 @@ function _show_replace_dialog(frm) {
               get_query: () => ({
                   filters: {
                       cheque_book: d.get_value("cheque_book"),
-                      leaf_status: "Available",
+                      leaf_status: "Unused",
                   },
               }) }
         );
@@ -645,7 +836,9 @@ function _show_replace_dialog(frm) {
                 call = frm.call("link_replacement",
                     { replacement_name: values.existing_cheque });
             } else {
-                if (!values.cheque_no || !values.issue_date || !values.due_date) {
+                // An outgoing replacement's number is its leaf's; only an
+                // incoming one needs the number typed in.
+                if ((!isOutgoing && !values.cheque_no) || !values.issue_date || !values.due_date) {
                     frappe.throw(__("Cheque No, Issue Date, and Due Date are required."));
                     return;
                 }

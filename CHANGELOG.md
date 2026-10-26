@@ -1,5 +1,121 @@
 # CHANGELOG
 
+## v1.3.1 — Leaf assignment and back-dating fixes (2026-10-26)
+
+Second half of 1.3.1; the version number is unchanged. One new field
+(`Cheque.effective_date`), one data patch, no fixture changes.
+
+### The chosen leaf is the leaf used
+
+Leaf reservation ignored what it was given. It always took the first Unused leaf
+of the book and overwrote `cheque_no` with that leaf's number, without a word.
+**CHQ-2026-00004** was written on 528201382 and recorded as 528201380.
+
+- An outgoing cheque now holds the leaf it names, by **Cheque Leaf** or by
+  **Cheque No**, as long as that leaf is **Unused** and belongs to the selected
+  **Cheque Book**. A number typed with the bank's zero padding (000528201382)
+  still finds leaf 528201382.
+- The next Unused leaf is picked **only when both are blank**, and the clerk is
+  told which one was assigned.
+- A leaf that is Reserved for another cheque, Issued, Voided or Cancelled is
+  **refused** with the reason (and the cheque holding it). So is a leaf from a
+  different book, a number that is no leaf of the book, and a leaf and number
+  that disagree. Nothing is silently overwritten.
+- On a draft, retyping the number moves the reservation to that number's leaf;
+  picking a different leaf carries its number. The abandoned leaf goes back to
+  Unused.
+- Assignment moved from `before_save` to `validate`. A draft whose number is
+  edited and then submitted in one call (`doc.submit()`, `frappe.client.submit`)
+  never runs `before_save`, so the edit used to be ignored. Inserting straight
+  at docstatus 1 is refused by the active Cheque Workflow, as before.
+- The number is always stored in the leaf's own spelling, so a stray space from
+  an import resolves instead of failing the exact-match check.
+- The book must belong to the cheque's company, and to its bank account when
+  one is set. The leaf picker could otherwise fill in a book from another
+  company or bank.
+- The desk: **Cheque Leaf** is now editable on a draft and searchable by number
+  (Cheque Leaf shows its `cheque_no` as its title). Its filter asked for
+  `leaf_status = "Available"`, a status that does not exist, so the picker had
+  always been empty. It now lists Unused leaves of the selected book, company and
+  bank account. `create_replacement` no longer requires a typed number for an
+  outgoing replacement; it takes the number from the chosen leaf. **Cheque No** is
+  no longer required on the form for an outgoing
+  cheque, so leaving both blank actually reaches the server. A number typed
+  while the type was Incoming is cleared, with a note, on switching to Outgoing.
+  Switching a draft from Outgoing to Incoming frees its reserved leaf.
+
+### `issued_on` is the issue date
+
+A leaf's `issued_on` is the cheque's `issue_date`, not the day it was keyed in.
+It falls back to today only when the cheque has no issue date.
+
+### A returned outgoing cheque cancels its leaf
+
+Return (workflow or `change_cheque_status`, from Issued, Handed Over or
+Presented) sets the leaf to **Cancelled**, still linked to the cheque, with the
+return date in the reason, and logs it on the timeline. Bounce leaves the leaf
+Issued.
+
+### Reassign Leaf (System Manager)
+
+A **Reassign Leaf** button on submitted outgoing cheques, plus
+`reassign_cheque_leaf(cheque_name, reason, new_leaf=None, cheque_no=None)`:
+
+- the target must be an **Unused** leaf of the **same book**;
+- the old leaf goes back to **Unused**, unlinked;
+- the new leaf takes over as Issued (or Cancelled for a returned cheque), with
+  `issued_on` = the cheque's issue date;
+- `cheque_no` follows the new leaf;
+- a **reason is mandatory** and is logged, with the user, as a Cheque Event;
+- the cheque row is locked first and re-checked, so a concurrent reassignment,
+  Cancel or Return makes it stop and ask for a reload instead of acting on a
+  stale copy.
+
+The linked Payment Entry is not touched. If its reference still carries the old
+number, the user is told to correct it there.
+
+### Effective Date on transitions
+
+A new optional **Effective Date** (Datetime, editable after submit). Set it
+before an action and that transition's timeline rows (the status event and its
+custody / leaf notes) carry it instead of now, so a Hand Over, Return or Deposit
+recorded days later shows the day it happened. The note adds when, and by whom,
+it was actually keyed in. Then:
+
+- it is **consumed**: cleared once the action is recorded, so the next action
+  defaults to now again. Saving it on its own records nothing;
+- it may not be in the future (5 minutes of clock skew allowed);
+- Clear uses its date for `cleared_date` when none was given;
+- it works for submit (Issue / Receive), every workflow action, Cancel Cheque,
+  and `change_cheque_status(..., effective_date=...)`;
+- in the desk: type it into the field and **Update**, then run the action. On a
+  submitted cheque the workflow makes the form read-only to anyone outside the
+  state's edit role, such as the Accounts User about to Clear a Deposited
+  cheque, so a **Set Effective Date** button (and `set_effective_date`) parks it
+  for anyone with write permission. That records who set it on the timeline,
+  and an open stale form can no longer overwrite it;
+- an ISO timestamp with an offset is converted to the system time zone, and an
+  unparseable one is a validation error;
+- it is not copied by Duplicate.
+
+### Translations
+
+The `"Unassigned"` row is dropped from `ar.csv`. ERPNext 16.52 now translates
+that msgid itself, so the row overrode core site-wide and failed
+`test_no_entry_shadows_frappe_or_erpnext`.
+
+### CHQ-2026-00004 correction (`patches/v3_4/fix_chq_2026_00004_leaf`)
+
+The cheque gets `cheque_no` **528201382** and leaf **e75gf78oeh**, which becomes
+Cancelled (the cheque was returned), linked, `issued_on` **2026-10-18**. Leaf
+**e75ge51640** (528201380) goes back to Unused and unlinked. Book counters are
+recomputed and the correction is logged on the cheque's timeline.
+
+The patch writes only what differs, so a re-run is a no-op. It also touches
+nothing unless every record matches the incident: same cheque, same book, both
+leaves and both numbers, neither leaf held by another cheque, and any unlinked
+leaf still Unused. On any other site it does nothing.
+
 ## v1.3.1 — Bundled Cairo, un-clear, editable references (2026-08-11)
 
 Patch release. No migration, no data rewrite; one new field and two new workflow

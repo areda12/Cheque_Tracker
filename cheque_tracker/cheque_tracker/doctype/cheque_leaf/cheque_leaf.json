@@ -105,7 +105,7 @@
   }
  ],
  "links": [],
- "modified": "2024-01-01 00:00:00.000000",
+ "modified": "2026-10-26 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cheque Tracker",
  "name": "Cheque Leaf",
@@ -136,7 +136,10 @@
    "write": 1
   }
  ],
+ "search_fields": "cheque_no,leaf_status",
+ "show_title_field_in_link": 1,
  "sort_field": "cheque_no",
  "sort_order": "ASC",
+ "title_field": "cheque_no",
  "track_changes": 1
 }
