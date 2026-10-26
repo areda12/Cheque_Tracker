@@ -37,9 +37,9 @@ of the book and overwrote `cheque_no` with that leaf's number, without a word.
   (Cheque Leaf shows its `cheque_no` as its title). Its filter asked for
   `leaf_status = "Available"`, a status that does not exist, so the picker had
   always been empty. It now lists Unused leaves of the selected book, company and
-  bank account. The same fix applies to the Replace dialog, where an outgoing
-  replacement no longer needs a typed number (`create_replacement` takes it from
-  the leaf). **Cheque No** is no longer required on the form for an outgoing
+  bank account. `create_replacement` no longer requires a typed number for an
+  outgoing replacement; it takes the number from the chosen leaf. **Cheque No** is
+  no longer required on the form for an outgoing
   cheque, so leaving both blank actually reaches the server. A number typed
   while the type was Incoming is cleared, with a note, on switching to Outgoing.
   Switching a draft from Outgoing to Incoming frees its reserved leaf.
@@ -67,8 +67,9 @@ A **Reassign Leaf** button on submitted outgoing cheques, plus
   `issued_on` = the cheque's issue date;
 - `cheque_no` follows the new leaf;
 - a **reason is mandatory** and is logged, with the user, as a Cheque Event;
-- the cheque row is locked first, so two reassignments of the same cheque
-  cannot both move it off the same old leaf.
+- the cheque row is locked first and re-checked, so a concurrent reassignment,
+  Cancel or Return makes it stop and ask for a reload instead of acting on a
+  stale copy.
 
 The linked Payment Entry is not touched. If its reference still carries the old
 number, the user is told to correct it there.
@@ -91,10 +92,17 @@ it was actually keyed in. Then:
   submitted cheque the workflow makes the form read-only to anyone outside the
   state's edit role, such as the Accounts User about to Clear a Deposited
   cheque, so a **Set Effective Date** button (and `set_effective_date`) parks it
-  for anyone with write permission;
+  for anyone with write permission. That records who set it on the timeline,
+  and an open stale form can no longer overwrite it;
 - an ISO timestamp with an offset is converted to the system time zone, and an
   unparseable one is a validation error;
 - it is not copied by Duplicate.
+
+### Translations
+
+The `"Unassigned"` row is dropped from `ar.csv`. ERPNext 16.52 now translates
+that msgid itself, so the row overrode core site-wide and failed
+`test_no_entry_shadows_frappe_or_erpnext`.
 
 ### CHQ-2026-00004 correction (`patches/v3_4/fix_chq_2026_00004_leaf`)
 

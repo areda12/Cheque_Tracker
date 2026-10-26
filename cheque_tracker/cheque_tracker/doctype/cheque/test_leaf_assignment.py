@@ -313,6 +313,30 @@ class TestChosenLeaf(FrappeTestCase):
         self.assertEqual(freed.leaf_status, "Unused")
         self.assertFalse(freed.cheque)
 
+    def test_a_draft_already_stuck_as_incoming_releases_its_leaf_on_save(self):
+        # The 1.3.0 desk left this state behind: saved as Incoming, leaf still
+        # Reserved for it, cheque_leaf blank.
+        chq = _draft(self.book)
+        leaf = chq.cheque_leaf
+        frappe.db.set_value(
+            "Cheque",
+            chq.name,
+            {
+                "cheque_type": "Incoming",
+                "cheque_leaf": None,
+                "cheque_book": None,
+                "drawee_bank": get_test_env()["drawee_bank"],
+                "cheque_no": "EXT-" + frappe.generate_hash(length=6),
+            },
+        )
+        chq.reload()
+        self.assertEqual(_leaf(leaf).leaf_status, "Reserved")
+
+        chq.save(ignore_permissions=True)
+        freed = _leaf(leaf)
+        self.assertEqual(freed.leaf_status, "Unused")
+        self.assertFalse(freed.cheque)
+
     def test_outgoing_replacement_takes_its_number_from_the_leaf(self):
         original = _issued(self.book)
         e2e.act(original, "Hand Over")
@@ -482,6 +506,18 @@ class TestReassignLeaf(FrappeTestCase):
         self.assertEqual(_leaf(self.leaves[3].name).leaf_status, "Unused")
         self.assertEqual(frappe.db.get_value("Cheque", chq.name, "cheque_leaf"), self.leaves[2].name)
 
+    def test_reassign_refuses_a_copy_that_missed_a_status_change(self):
+        # A Return (or Cancel) that landed after this copy was loaded leaves
+        # cheque_leaf alone; the stale status must still stop the reassignment.
+        chq = _issued(self.book)
+        stale = frappe.get_doc("Cheque", chq.name)
+        e2e.act(chq, "Hand Over")
+
+        with self.assertRaises(frappe.ValidationError):
+            stale.reassign_leaf(reason=self.REASON, new_leaf=self.leaves[3].name)
+        self.assertEqual(_leaf(self.leaves[3].name).leaf_status, "Unused")
+        self.assertEqual(_leaf(self.leaves[0].name).cheque, chq.name)
+
     def test_reassign_refuses_a_draft(self):
         chq = _draft(self.book)
         with self.assertRaises(frappe.ValidationError):
@@ -597,7 +633,9 @@ class TestEffectiveDate(FrappeTestCase):
         # The endpoint exists for users the workflow makes read-only; it writes
         # the one field, and the next transition consumes it.
         chq = e2e.make_outgoing(with_payment_entry=False)
-        frappe.set_user(get_test_env()["treasury_user"])
+        modified_before = get_datetime(frappe.db.get_value("Cheque", chq.name, "modified"))
+        treasury = get_test_env()["treasury_user"]
+        frappe.set_user(treasury)
         try:
             set_effective_date(chq.name, str(self.effective))
         finally:
@@ -605,6 +643,13 @@ class TestEffectiveDate(FrappeTestCase):
         self.assertEqual(
             get_datetime(frappe.db.get_value("Cheque", chq.name, "effective_date")), self.effective
         )
+        self.assertGreater(
+            get_datetime(frappe.db.get_value("Cheque", chq.name, "modified")), modified_before,
+            "modified must move so a stale open form cannot overwrite the parked date",
+        )
+        parked = [e.notes for e in _events(chq.name, "Note") if "Effective Date for the next action" in (e.notes or "")]
+        self.assertTrue(parked, "who parked the date must be on the timeline")
+        self.assertIn(treasury, parked[-1])
 
         e2e.act(chq, "Hand Over")
         self.assertEqual(get_datetime(self._event(chq.name, "Handed Over").event_datetime), self.effective)

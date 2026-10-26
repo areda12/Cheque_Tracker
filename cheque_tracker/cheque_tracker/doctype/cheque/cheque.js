@@ -273,6 +273,11 @@ function _show_effective_date_intro(frm) {
 // the state's allow_edit role — the Accounts User about to Clear a Deposited
 // cheque, for one — so the date is parked through its own endpoint instead.
 function _show_effective_date_dialog(frm) {
+    // Setting it reloads the form, which would throw away unsaved edits.
+    if (frm.is_dirty()) {
+        frappe.msgprint(__("Save (Update) or discard your changes before setting the Effective Date."));
+        return;
+    }
     const d = new frappe.ui.Dialog({
         title: __("Set Effective Date"),
         fields: [

@@ -532,8 +532,9 @@ class Cheque(Document):
         desk blanks Cheque Leaf the moment the type changes to Incoming, so by
         save time the field no longer names the reserved leaf.
         """
-        before = self.get_doc_before_save()
-        names = set(self._held_leaves()) if before and before.cheque_type == "Outgoing" else set()
+        # Not gated on the previous type: a draft switched under 1.3.0 is
+        # already saved as Incoming while its leaf is still Reserved for it.
+        names = set(self._held_leaves())
         if self.cheque_leaf:
             names.add(self.cheque_leaf)
         for name in names:
@@ -879,11 +880,19 @@ class Cheque(Document):
         if not (new_leaf or (cheque_no or "").strip()):
             frappe.throw(_("Choose the leaf to move this cheque to."), frappe.ValidationError)
 
-        # Lock the cheque before any leaf (the order a save takes them in), so
-        # two reassignments of the same cheque queue up instead of both moving
-        # it off the same old leaf and orphaning one of the new ones.
-        current = frappe.db.get_value("Cheque", self.name, "cheque_leaf", for_update=True)
-        if current != self.cheque_leaf:
+        # Lock the cheque before any leaf (the order a save takes them in), and
+        # re-check everything this method decides on against the locked row: a
+        # locking read sees the latest commit, so a concurrent reassignment,
+        # Cancel or Return that landed since this copy was loaded is caught
+        # instead of acted on with a stale leaf, docstatus or status.
+        current = frappe.db.get_value(
+            "Cheque", self.name, ["cheque_leaf", "docstatus", "status"], as_dict=True, for_update=True
+        )
+        if (current.cheque_leaf, current.docstatus, current.status) != (
+            self.cheque_leaf,
+            self.docstatus,
+            self.status,
+        ):
             frappe.throw(
                 _("The leaf of {0} was changed by someone else just now. Reload and try again.").format(
                     self.name
@@ -1384,7 +1393,25 @@ def set_effective_date(cheque_name: str, effective_date: str | None = None):
     if doc.docstatus == 2:
         frappe.throw(_("{0} is cancelled.").format(doc.name), frappe.ValidationError)
     value = _parse_effective_date(effective_date)
-    frappe.db.set_value("Cheque", doc.name, "effective_date", value, update_modified=False)
+    previous = doc.effective_date
+
+    # Bump `modified` and tell open forms: a stale form saved afterwards would
+    # otherwise write its blank Effective Date straight over this one.
+    doc.db_set("effective_date", value, notify=True)
+
+    # Whoever runs the action is named on its event; who chose the date is
+    # recorded here.
+    doc._append_event(
+        "Note",
+        notes=(
+            f"Effective Date for the next action set to {format_datetime(value)}"
+            if value
+            else "Effective Date for the next action cleared"
+        )
+        + (f" (was {format_datetime(previous)})" if previous else "")
+        + f" — by {frappe.session.user}.",
+    )
+    doc._flush_events()
     return {"effective_date": value}
 
 
